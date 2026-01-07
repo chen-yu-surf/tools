@@ -189,34 +189,18 @@ class benchmark:
                           c_avg = avg
                           c_std = std
 
-                i = 0
-                while i < 20:
-                    self.schedstat_array[i] = 0#stat_a[i] - stat_b[i]
-                    i += 1
-
-                i = 0
-                while i < 116:
-                    self.nr_sis_array_2d[i][0] = 0#nr_after[i][0] - nr_before[i][0]
-                    self.nr_sis_array_2d[i][1] = 0#nr_after[i][1] - nr_before[i][1]
-                    i += 1
-
-                #sanity check
                 if b_avg == 0:
-                    print("{} log does not exist".format(baseline))
-                    sys.exit(1)
+                      print("{} log does not exist".format(baseline))
+                      sys.exit(1)
 
                 if compare and c_avg == 0:
-                    print("{} log does not exist".format(compare))
-                    sys.exit(1)
+                      print("{} log does not exist".format(compare))
+                      sys.exit(1)
 
                 base_dict = { 'case':case, 'load':load, 'b_avg':b_avg, 'b_std':b_std, 'c_avg':c_avg, 'c_std':c_std, 'util_avg':util_avg}
-                for field in schedstat_field:
-                    # in case someone says -s 0
-                    if field == 0:
-                        field = 1
-                    base_dict['s'+field] = int(self.schedstat_array[int(field) - 1])
 
-                self.table = self.table.append(base_dict, ignore_index=True)
+            new_df = pd.DataFrame([base_dict])
+            self.table = pd.concat([self.table, pd.DataFrame([base_dict])], ignore_index=True)
 
         # sort the table by case column first, then load column
         #
@@ -230,7 +214,7 @@ class benchmark:
         # UDP_RR          	thread-192	    15524.48	( 26.66)
         # UDP_RR          	thread-384	    23963.53	( 27.27)
         self.table['sort'] = self.table['load'].str.extract(
-                                '(\d+)', expand = False).astype(int)
+                                r'(\d+)', expand = False).astype(int)
         self.table.sort_values(by=['case', 'sort'],
                                 inplace = True, ascending= True)
         self.table = self.table.drop('sort', axis = 1).reset_index(drop = True)

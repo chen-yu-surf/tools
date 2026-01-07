@@ -13,8 +13,8 @@ hackbench_work_type="process threads"
 hackbench_ipc_mode="pipe sockets"
 hackbench_work_loops=300000
 hackbench_data_size=100
-hackbench_num_fds=$(($(nproc) / 8))
-#hackbench_num_fds=$(($(nproc) / 14))
+#hackbench_num_fds=$(($(nproc) / 8))
+hackbench_num_fds="15 30 45"
 hackbench_pattern_cmd="grep Time"
 hackbench_sleep_time=10
 hackbench_log_path=$test_path/logs/hackbench
@@ -40,7 +40,9 @@ run_hackbench_pre()
 	for job in $hackbench_job_list; do
 		for wt in $hackbench_work_type; do
 			for im in $hackbench_ipc_mode; do
-				mkdir -p $hackbench_log_path/$wt-$im/$job-groups/$run_name
+				for fd in $hackbench_num_fds; do
+					mkdir -p $hackbench_log_path/$wt-$im-$fd/$job-groups/$run_name
+				done
 			done
 		done
 	done
@@ -51,9 +53,11 @@ run_hackbench_post()
 	for job in $hackbench_job_list; do
 		for wt in $hackbench_work_type; do
 			for im in $hackbench_ipc_mode; do
-				log_file=$hackbench_log_path/$wt-$im/$job-groups/$run_name/hackbench.log
-				cat $log_file | $hackbench_pattern_cmd | awk '{print $2}' > \
-					$hackbench_log_path/$wt-$im/$job-groups/$run_name.log
+				for fd in $hackbench_num_fds; do
+					log_file=$hackbench_log_path/$wt-$im-$fd/$job-groups/$run_name/hackbench.log
+					cat $log_file | $hackbench_pattern_cmd | awk '{print $2}' > \
+						$hackbench_log_path/$wt-$im-$fd/$job-groups/$run_name.log
+				done
 			done
 		done
 	done
@@ -65,12 +69,13 @@ run_hackbench_single()
 	local wt=$2
 	local im=$3
 	local iter=$4
+	local fd=$5
 	if [ $im == "pipe" ]; then
 		#perf record -q -ag --realtime=1 -m 256 --count=1000003 -e cycles:pp -o perf-hackbench-$job-$wt-$im-$iter.data -D 10000 -- hackbench -g $job --$wt --$im -l $hackbench_work_loops -s $hackbench_data_size -f $hackbench_num_fds
-		hackbench -g $job --$wt --$im -l $hackbench_work_loops -s $hackbench_data_size -f $hackbench_num_fds
+		hackbench -g $job --$wt --$im -l $hackbench_work_loops -s $hackbench_data_size -f $fd
 	elif [ $im == "sockets" ]; then
 		#perf record -q -ag --realtime=1 -m 256 --count=1000003 -e cycles:pp -o perf-hackbench-$job-$wt-$im-$iter.data -D 10000 -- hackbench -g $job --$wt -l $hackbench_work_loops -s $hackbench_data_size -f $hackbench_num_fds
-		hackbench -g $job --$wt -l $hackbench_work_loops -s $hackbench_data_size -f $hackbench_num_fds
+		hackbench -g $job --$wt -l $hackbench_work_loops -s $hackbench_data_size -f $fd
 	else
 		echo "hackbench: wrong IPC mode!"
 	fi
@@ -82,7 +87,8 @@ run_hackbench_iterations()
 {
 	local job=$1
 	local wt=$2
-	local im=$3	
+	local im=$3
+	local fd=$4
 
 	#. $test_path/monitor.sh
 	for i in $(seq 1 $hackbench_iterations); do
@@ -92,7 +98,7 @@ run_hackbench_iterations()
 		#cat /proc/schedstat | grep cpu >> $hackbench_log_path/$wt-$im/group-$job/$run_name-schedstat_before.log
 		#cat /proc/version
 		#dmesg -c | awk '(NR>1)' | awk -F ']' '{ print $2 }' >> $hackbench_log_path/$wt-$im/group-$job/$run_name-sis_nr_before.log
-		run_hackbench_single $job $wt $im $i >> $hackbench_log_path/$wt-$im/$job-groups/$run_name/hackbench.log
+		run_hackbench_single $job $wt $im $i $fd >> $hackbench_log_path/$wt-$im-$fd/$job-groups/$run_name/hackbench.log
 		#echo "Group:"$job" - Type:"$wt" - Mode:"$im" - Iterations:"$i >> hackbench_process.log
 		#sudo scp hackbench_process.log chenyu-dev:~/
 		#cat /proc/schedstat | grep cpu >> $hackbench_log_path/$wt-$im/group-$job/$run_name-schedstat_after.log
@@ -107,9 +113,11 @@ run_hackbench()
 	for job in $hackbench_job_list; do
 		for wt in $hackbench_work_type; do
 			for im in $hackbench_ipc_mode; do
-				echo "hackbench: wait 10 seconds for the next case"
-				sleep $hackbench_sleep_time
-				run_hackbench_iterations $job $wt $im
+				for fd in $hackbench_num_fds; do
+					echo "hackbench: wait 10 seconds for the next case"
+					sleep $hackbench_sleep_time
+					run_hackbench_iterations $job $wt $im $fd
+				done
 			done
 		done
 	done
