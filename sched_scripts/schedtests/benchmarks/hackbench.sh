@@ -9,14 +9,15 @@
 #####################
 #hackbench parameters
 #####################
-hackbench_work_type="process threads"
-hackbench_ipc_mode="pipe sockets"
-hackbench_work_loops=300000
+hackbench_work_type="threads"
+hackbench_ipc_mode="pipe"
+hackbench_work_loops=1000000
 hackbench_data_size=100
-#hackbench_num_fds=$(($(nproc) / 8))
-hackbench_num_fds="15 30 45"
+hackbench_max_num_fds=$(($(nproc) / 8))
+#hackbench_num_fds="2 4 8 16"
+hackbench_num_fds="16"
 hackbench_pattern_cmd="grep Time"
-hackbench_sleep_time=10
+hackbench_sleep_time=1
 hackbench_log_path=$test_path/logs/hackbench
 
 run_hackbench_pre()
@@ -32,7 +33,7 @@ run_hackbench_pre()
 
 	# ${A##* } - remove longest leading, keep only the last word)
 	last_job=${hackbench_job_list##* }
-	tasks=$((last_job * $hackbench_num_fds))
+	tasks=$((last_job * $hackbench_max_num_fds))
 	org_open_files=`ulimit -n`
 	# increase open file number
 	ulimit -n $((tasks + $(nproc) + $org_open_files))
@@ -104,7 +105,7 @@ run_hackbench_iterations()
 		#cat /proc/schedstat | grep cpu >> $hackbench_log_path/$wt-$im/group-$job/$run_name-schedstat_after.log
 		#cat /proc/version
 		#dmesg -c | awk '(NR>1)' | awk -F ']' '{ print $2 }' >> $hackbench_log_path/$wt-$im/group-$job/$run_name-sis_nr_after.log
-		sleep 10
+		sleep 1
 	done
 }
 

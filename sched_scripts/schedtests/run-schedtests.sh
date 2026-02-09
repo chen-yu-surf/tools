@@ -2,15 +2,15 @@
 rela_path=`dirname $0`
 test_path=`cd "$rela_path" && pwd`
 
-pepc.standalone pstates config --governor performance
-pepc.standalone pstates config --turbo off
-pepc.standalone cstates config --disable C6
+pepc pstates config --governor performance
+#pepc.standalone pstates config --turbo off
+pepc cstates config --disable C2
 echo 1 > /proc/sys/kernel/numa_balancing
-#echo 1 > /proc/sys/kernel/sched_schedstats
+echo 0 > /proc/sys/kernel/sched_schedstats
 #echo 1 > /sys/kernel/debug/tracing/events/sched/sched_update_sd_lb_stats/enable
 #pepc.standalone cpu-hotplug offline --packages 1
 
-sleep 10
+#sleep 10
 
 run_name=`uname -r`
 # 25% 50% 75% 100% 125% 150% 175% 200%
@@ -21,7 +21,7 @@ iterations=3
 
 start_hackbench()
 {
-	hackbench_job_list="1 2 4 8"
+	hackbench_job_list="1 2 4"
 	#hackbench_job_list="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28"
 	hackbench_iterations=$iterations
 	. $test_path/benchmarks/hackbench.sh
