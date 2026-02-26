@@ -1,0 +1,338 @@
+From a5df630f33b66b5023fd710ae7bf0a908d62336a Mon Sep 17 00:00:00 2001
+From: Chen Yu <yu.c.chen@intel.com>
+Date: Mon, 9 Feb 2026 11:34:14 +0800
+Subject: [PATCH] Simplify schedtests
+
+Signed-off-by: Chen Yu <yu.c.chen@intel.com>
+---
+ .../schedtests/benchmarks/hackbench.sh        |  17 +-
+ sched_scripts/schedtests/report.py            | 146 +-----------------
+ sched_scripts/schedtests/run-schedtests.sh    |  12 +-
+ 3 files changed, 23 insertions(+), 152 deletions(-)
+
+diff --git a/sched_scripts/schedtests/benchmarks/hackbench.sh b/sched_scripts/schedtests/benchmarks/hackbench.sh
+index 9150e66..787c9c0 100755
+--- a/sched_scripts/schedtests/benchmarks/hackbench.sh
++++ b/sched_scripts/schedtests/benchmarks/hackbench.sh
+@@ -9,14 +9,15 @@
+ #####################
+ #hackbench parameters
+ #####################
+-hackbench_work_type="process threads"
+-hackbench_ipc_mode="pipe sockets"
+-hackbench_work_loops=300000
++hackbench_work_type="threads"
++hackbench_ipc_mode="pipe"
++hackbench_work_loops=1000000
+ hackbench_data_size=100
+-#hackbench_num_fds=$(($(nproc) / 8))
+-hackbench_num_fds="15 30 45"
++hackbench_max_num_fds=$(($(nproc) / 8))
++#hackbench_num_fds="2 4 8 16"
++hackbench_num_fds="16"
+ hackbench_pattern_cmd="grep Time"
+-hackbench_sleep_time=10
++hackbench_sleep_time=1
+ hackbench_log_path=$test_path/logs/hackbench
+ 
+ run_hackbench_pre()
+@@ -32,7 +33,7 @@ run_hackbench_pre()
+ 
+ 	# ${A##* } - remove longest leading, keep only the last word)
+ 	last_job=${hackbench_job_list##* }
+-	tasks=$((last_job * $hackbench_num_fds))
++	tasks=$((last_job * $hackbench_max_num_fds))
+ 	org_open_files=`ulimit -n`
+ 	# increase open file number
+ 	ulimit -n $((tasks + $(nproc) + $org_open_files))
+@@ -104,7 +105,7 @@ run_hackbench_iterations()
+ 		#cat /proc/schedstat | grep cpu >> $hackbench_log_path/$wt-$im/group-$job/$run_name-schedstat_after.log
+ 		#cat /proc/version
+ 		#dmesg -c | awk '(NR>1)' | awk -F ']' '{ print $2 }' >> $hackbench_log_path/$wt-$im/group-$job/$run_name-sis_nr_after.log
+-		sleep 10
++		sleep 1
+ 	done
+ }
+ 
+diff --git a/sched_scripts/schedtests/report.py b/sched_scripts/schedtests/report.py
+index 70d72a5..68bcd27 100755
+--- a/sched_scripts/schedtests/report.py
++++ b/sched_scripts/schedtests/report.py
+@@ -32,65 +32,6 @@ class benchmark:
+         self.table = pd.DataFrame(columns =
+                         ['case', 'load', 'b_avg', 'b_std', 'c_avg', 'c_std'])
+ 
+-        # /proc/schedstat, at most 20 fields
+-        self.schedstat_array = np.zeros((20,1))
+-
+-        # nr_sis at most for  116 CPUs, format: cpu nr_sis_prop nr_sis_util
+-        w, h = 2, 116
+-        self.nr_sis_array_2d = [[0 for x in range(w)] for y in range(h)]
+-
+-    def _schedstat_parse(self, logfile):
+-
+-        fd = open(logfile, 'r')
+-        stat = np.zeros((20,1))
+-
+-        i = 0
+-        iter = 0
+-        for line in fd.readlines():
+-            items = line.strip().split()
+-            i = 0
+-            for field in items:
+-                # the first field is cpuX
+-                if i == 0:
+-                    # check how many times cpu0 appears
+-                    if field == "cpu0":
+-                        iter += 1
+-                else:
+-                    stat[i-1] += int(field)
+-                i += 1
+-
+-        i = 0
+-        # stat[i] is the sum of ith field from all CPUs
+-        while i < 20:
+-            stat[i] /= iter
+-            i += 1
+-
+-        fd.close()
+-
+-        return stat
+-
+-    def _util_avg_parse(self, logfile):
+-
+-        fd = open(logfile, 'r')
+-
+-        util_avg = 0
+-        iter = 0
+-
+-        for line in fd.readlines():
+-            m = re.search('sum_util', line)
+-            if  not m:
+-                continue
+-
+-            items = line.strip().split("=")
+-            util_avg += int(items[2])
+-            iter += 1
+-
+-        util_avg /= iter
+-
+-        fd.close()
+-
+-        return util_avg
+-
+     def _log_parse(self, logfile):
+ 
+         metrics = []
+@@ -108,22 +49,6 @@ class benchmark:
+ 
+         return avg, std
+ 
+-    def _nr_parse(self, logfile):
+-
+-        w, h = 2, 116
+-        array_2d = [[0 for x in range(w)] for y in range(h)]
+-
+-        fd = open(logfile, 'r')
+-
+-        for line in fd.readlines():
+-            items = line.strip().split()
+-            array_2d[int(items[0])][0] = int(items[1])
+-            array_2d[int(items[0])][1] = int(items[2])
+-
+-        fd.close()
+-
+-        return array_2d
+-
+     def _log_process(self, baseline, compare):
+         # The log topology is 4-level structure
+         # ./logs
+@@ -144,7 +69,6 @@ class benchmark:
+                 b_std = 0.0
+                 c_avg = 0.0
+                 c_std = 0.0
+-                util_avg = 0.0
+ 
+                 for log in os.listdir(load_path):
+                     log_file = os.path.join(load_path, log)
+@@ -153,39 +77,13 @@ class benchmark:
+                     if os.path.isdir(log_file):
+                         continue
+ 
+-                    if "schedstat" not in log_file:
+-                          if "ftrace" not in log_file:
+-                             if "sis_nr" not in log_file:
+-                                 avg, std = self._log_parse(log_file)
++                    avg, std = self._log_parse(log_file)
+ 
+                     if (baseline+".log").__eq__(log):
+-                          if "schedstat_before" in log_file:
+-                             stat_b = self._schedstat_parse(log_file)
+-                             continue
+-                          if "schedstat_after" in log_file:
+-                             stat_a = self._schedstat_parse(log_file)
+-                             continue
+-                          if "ftrace" in log_file:
+-                             util_avg = self._util_avg_parse(log_file)
+-                             continue
+-                          if "sis_nr_before" in log_file:
+-                             nr_before = self._nr_parse(log_file)
+-                             continue
+-                          if "sis_nr_after" in log_file:
+-                             nr_after = self._nr_parse(log_file)
+-                             continue
+-
+                           b_avg = avg
+                           b_std = std
+ 
+                     if (compare+".log").__eq__(log):
+-                          if "schedstat" in log_file:
+-                             #TBD
+-                             continue
+-                          if "util_avg" in log_file:
+-                             #TBD
+-                             continue
+-
+                           c_avg = avg
+                           c_std = std
+ 
+@@ -197,10 +95,9 @@ class benchmark:
+                       print("{} log does not exist".format(compare))
+                       sys.exit(1)
+ 
+-                base_dict = { 'case':case, 'load':load, 'b_avg':b_avg, 'b_std':b_std, 'c_avg':c_avg, 'c_std':c_std, 'util_avg':util_avg}
++                base_dict = { 'case':case, 'load':load, 'b_avg':b_avg, 'b_std':b_std, 'c_avg':c_avg, 'c_std':c_std}
+ 
+-            new_df = pd.DataFrame([base_dict])
+-            self.table = pd.concat([self.table, pd.DataFrame([base_dict])], ignore_index=True)
++                self.table = pd.concat([self.table, pd.DataFrame([base_dict])], ignore_index=True)
+ 
+         # sort the table by case column first, then load column
+         #
+@@ -221,24 +118,10 @@ class benchmark:
+ 
+     def _baseline_report(self, baseline):
+ 
+-        if print_sis_nr == 1:
+-                i = 0
+-                while i < 116:
+-                    print("%d %ld %ld" % (i, self.nr_sis_array_2d[i][0], self.nr_sis_array_2d[i][1]))
+-                    i += 1
+-                return
+-
+         # print table header
+         print('{0:16s}\t{1:8s}\t{2:>12s}\t{3:>8s}\t\t' \
+             .format('case','load',self.metrics_str,'std%'), end='')
+ 
+-        for field in schedstat_field:
+-            # in case someone says -s 0
+-            if field == '0':
+-                field = '1'
+-            s_name = 's' + field
+-            print('{0:12s}\t'.format(s_name), end='')
+-
+         print('{0:12s}\t'.format('util_avg'), end='')
+         print()
+ 
+@@ -247,11 +130,6 @@ class benchmark:
+             print('{0:16s}\t{1:8s}\t{2:12.2f}\t({3:6.2f})\t' \
+                 .format(self.table['case'][i], self.table['load'][i],
+                 self.table['b_avg'][i], self.table['b_std'][i]), end='')
+-            for field in schedstat_field:
+-                 # in case someone says -s 0
+-                 if field == 0:
+-                     field = 1
+-                 print("%10.0f\t" % self.table['s'+field][i], end='')
+ 
+             print("%16.0f\t" % self.table['util_avg'][i], end='')
+             print()
+@@ -275,10 +153,9 @@ class benchmark:
+                     change_pct, self.table['c_std'][i]))
+ 
+     def report(self, bmk, baseline, compare):
+-        if print_sis_nr != 1:
+-            #output benchmark name
+-            print("\n{}".format(bmk['name']))
+-            print("{}".format("=" * len(bmk['name'])))
++        #output benchmark name
++        print("\n{}".format(bmk['name']))
++        print("{}".format("=" * len(bmk['name'])))
+ 
+         self._log_process(baseline, compare)
+ 
+@@ -292,15 +169,13 @@ def usage():
+     print("\t-t (--testname) test case name")
+     print("\t-b (--baseline) baseline run name")
+     print("\t-c (--compare) compare run name")
+-    print("\t-s (--schedstat) schedstat field")
+     print("\t-f (--file) log file")
+-    print("\t-n (--nrutil)")
+ 
+ if __name__ == "__main__":
+ 
+     try:
+-        opts, args = getopt.getopt(sys.argv[1:], '-h-t:-b:-c:-s:-f:-n',
+-                        ['help','testname=','baseline=','compare=','schedstat=','file='])
++        opts, args = getopt.getopt(sys.argv[1:], '-h-t:-b:-c:-f:-n',
++                        ['help','testname=','baseline=','compare=','file='])
+     except getopt.GetoptError:
+         usage()
+         # 128 - invalid argument to exit
+@@ -309,7 +184,6 @@ if __name__ == "__main__":
+     testname = ""
+     baseline = ""
+     compare = ""
+-    schedstat_field = ""
+     logpath = "logs"
+     print_sis_nr = 0
+ 
+@@ -323,12 +197,8 @@ if __name__ == "__main__":
+             baseline = opt_value
+         if opt_name in ('-c', '--compare'):
+             compare = opt_value
+-        if opt_name in ('-s', '--schedstat'):
+-            schedstat_field = opt_value.split(',')
+         if opt_name in ('-f', '--file'):
+             logpath = opt_value
+-        if opt_name in ('-n', '--nrutil'):
+-            print_sis_nr = 1
+ 
+     # baseline is a must
+     if not baseline:
+diff --git a/sched_scripts/schedtests/run-schedtests.sh b/sched_scripts/schedtests/run-schedtests.sh
+index a0374b5..7aac0c5 100755
+--- a/sched_scripts/schedtests/run-schedtests.sh
++++ b/sched_scripts/schedtests/run-schedtests.sh
+@@ -2,15 +2,15 @@
+ rela_path=`dirname $0`
+ test_path=`cd "$rela_path" && pwd`
+ 
+-pepc.standalone pstates config --governor performance
+-pepc.standalone pstates config --turbo off
+-pepc.standalone cstates config --disable C6
++pepc pstates config --governor performance
++#pepc.standalone pstates config --turbo off
++pepc cstates config --disable C2
+ echo 1 > /proc/sys/kernel/numa_balancing
+-#echo 1 > /proc/sys/kernel/sched_schedstats
++echo 0 > /proc/sys/kernel/sched_schedstats
+ #echo 1 > /sys/kernel/debug/tracing/events/sched/sched_update_sd_lb_stats/enable
+ #pepc.standalone cpu-hotplug offline --packages 1
+ 
+-sleep 10
++#sleep 10
+ 
+ run_name=`uname -r`
+ # 25% 50% 75% 100% 125% 150% 175% 200%
+@@ -21,7 +21,7 @@ iterations=3
+ 
+ start_hackbench()
+ {
+-	hackbench_job_list="1 2 4 8"
++	hackbench_job_list="1 2 4"
+ 	#hackbench_job_list="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28"
+ 	hackbench_iterations=$iterations
+ 	. $test_path/benchmarks/hackbench.sh
+-- 
+2.51.0
+

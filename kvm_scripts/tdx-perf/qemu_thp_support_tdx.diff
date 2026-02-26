@@ -1,0 +1,30 @@
+diff --git a/linux-headers/linux/kvm.h b/linux-headers/linux/kvm.h
+index 76cd2d772d..44b47dd314 100644
+--- a/linux-headers/linux/kvm.h
++++ b/linux-headers/linux/kvm.h
+@@ -15,6 +15,7 @@
+ #include <asm/kvm.h>
+ 
+ #define KVM_API_VERSION 12
++#define KVM_GUEST_MEMFD_ALLOW_HUGEPAGE         (1ULL << 0)
+ 
+ /* for KVM_SET_USER_MEMORY_REGION */
+ struct kvm_userspace_memory_region {
+diff --git a/system/physmem.c b/system/physmem.c
+index 8c9368bc99..67eb880d9b 100644
+--- a/system/physmem.c
++++ b/system/physmem.c
+@@ -1844,8 +1844,9 @@ static void ram_block_add(RAMBlock *new_block, Error **errp)
+     if (kvm_enabled() && (new_block->flags & RAM_GUEST_MEMFD)) {
+         assert(new_block->guest_memfd < 0);
+ 
++	uint64_t flags = KVM_GUEST_MEMFD_ALLOW_HUGEPAGE;
+         new_block->guest_memfd = kvm_create_guest_memfd(new_block->max_length,
+-                                                        0, errp);
++                                                        flags, errp);
+         if (new_block->guest_memfd < 0) {
+             qemu_mutex_unlock_ramlist();
+             return;
+-- 
+2.34.1
+

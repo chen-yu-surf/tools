@@ -1,0 +1,38 @@
+### hackbench a general scheduler benchmark and stress test that is
+### sensitive to regressions in the scheduler fast-path. It creates groups
+### of threads or processes (depending on configuration) that communicate
+### via pipes or sockets (depending on configuration).
+###
+### Note that while hackbench is often considered to be a scheduler benchmark,
+### it is particularly weak when used with pipes. Given multiple senders and
+### receivers sharing pipes that are unsynchronised, it is dominated heavily
+### by a mutex protecting the pipe structures and a spinlock protecting the
+### queue for wakeups. A significant percentage of time is spend acquiring
+### and releasing those locks as well as the inevitable bounces of cache
+### line data as waker/wakee processes do not run on the same CPUs but
+### instead select CPUs that are nearby during wakeups.
+export MMTESTS="hackbench-thread-pipes hackbench-thread-sockets"
+
+# List of monitors
+#export RUN_MONITOR=yes
+#export MONITORS_ALWAYS=
+#export MONITORS_GZIP="proc-vmstat perf-time-stat mpstat turbostat"
+#export MONITORS_WITH_LATENCY="vmstat"
+#export MONITOR_PERF_EVENTS=cpu-migrations,context-switches
+#export MONITOR_UPDATE_FREQUENCY=10
+
+# HackBench
+export HACKBENCH_ITERATIONS=5
+export HACKBENCH_MIN_GROUPS=1
+export HACKBENCH_MAX_GROUPS=16
+if [[ `uname -m` =~ i.86 ]]; then
+	export HACKBENCH_MAX_GROUPS=128
+fi
+if [ $HACKBENCH_MAX_GROUPS -gt 296 ]; then
+	export HACKBENCH_MAX_GROUPS=296
+fi
+export HACKBENCH_LOOPS=1000000
+export MMTESTS_THREAD_CUTOFF=
+
+# when run in container
+export CONTAINER_NO_PIDS_LIMIT=yes

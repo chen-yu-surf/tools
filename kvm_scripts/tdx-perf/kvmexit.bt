@@ -1,0 +1,16 @@
+#!/usr/bin/env bpftrace
+#include <linux/sched.h>
+
+BEGIN
+{
+	printf("Tracing kvm exit reason, refer to arch/x86/include/uapi/asm/vmx.h ... Hit Ctrl-C to end.\n");
+}
+
+tracepoint:kvm:kvm_exit
+{
+	@reason[args->exit_reason] = count();
+}
+
+END
+{
+}
