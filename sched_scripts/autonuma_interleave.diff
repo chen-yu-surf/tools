@@ -1,0 +1,62 @@
+diff --git a/numa01.c b/numa01.c
+index 98c2bec..420e13c 100644
+--- a/numa01.c
++++ b/numa01.c
+@@ -21,7 +21,7 @@
+ THREADS_VAL
+ NDMASK1
+ NDMASK2
+-#define SIZE (3UL*1024*1024*1024) 
++#define SIZE (2UL*1024*1024*1024)
+ //#define THREAD_ALLOC
+ #ifdef THREAD_ALLOC
+ #define THREAD_SIZE (SIZE/THREADS)
+@@ -31,6 +31,10 @@ NDMASK2
+ //#define HARD_BIND
+ //#define INVERSE_BIND
+ //#define NO_BIND_FORCE_SAME_NODE
++#define PAGE_SIZE 4096
++#define SECT_SIZE (2*PAGE_SIZE)
++#define MPOL_INTERLEAVE  3
++#define MPOL_F_NUMA_BALANCING   (1 << 13)
+ 
+ static char *p_global;
+ static unsigned long nodemask_global;
+@@ -45,18 +49,24 @@ void *thread(void * arg)
+ 	int nr = 1000;
+ #endif
+ #ifdef NO_BIND_FORCE_SAME_NODE
+-	if (set_mempolicy(MPOL_BIND, &nodemask_global, 3) < 0)
++	if (set_mempolicy(MPOL_INTERLEAVE | MPOL_F_NUMA_BALANCING,
++			  &nodemask_global, 3) < 0)
+ 		perror("set_mempolicy"), printf("%lu\n", nodemask_global),
+ 			exit(1);
+ #endif
+ 	bzero(p_global, SIZE);
+ #ifdef NO_BIND_FORCE_SAME_NODE
+-	if (set_mempolicy(MPOL_DEFAULT, NULL, 3) < 0)
++	if (0 && set_mempolicy(MPOL_DEFAULT, NULL, 3) < 0)
+ 		perror("set_mempolicy"), exit(1);
+ #endif
+ 	for (i = 0; i < nr; i++) {
+-		bzero(p, THREAD_SIZE);
+-		asm volatile("" : : : "memory");
++		char *end = p + THREAD_SIZE;
++		char *start = p;
++		while (start + PAGE_SIZE <= end) {
++			bzero(start, PAGE_SIZE);
++			asm volatile("" : : : "memory");
++			start += SECT_SIZE;
++		}
+ 	}
+ 	return NULL;
+ }
+@@ -71,7 +81,7 @@ int main()
+ 	int f;
+ 	unsigned long nodemask;
+ 
+-	nodemask_global = (time(NULL) & 1) + 1;
++	nodemask_global = 3;
+ 	f = creat("lock", 0400);
+ 	if (f < 0)
+ 		perror("creat"), exit(1);

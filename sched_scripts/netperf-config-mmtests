@@ -1,0 +1,6 @@
+export MMTESTS="netperf-ipv4-udp-rr netperf-ipv4-tcp-rr"
+
+# NetPerf
+export NETPERF_BUFFER_SIZES=1
+export NETPERF_ITERATIONS=
+export NR_PAIRS=

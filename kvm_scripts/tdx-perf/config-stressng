@@ -1,0 +1,12 @@
+### stressng context switching stress test
+###
+
+export MMTESTS="stressng"
+
+export STRESSNG_MAX_THREADS=$((NUMCPUS*1))
+export STRESSNG_MAX_THREADS=$((NUMCPUS*1))
+export STRESSNG_RUNTIME=40
+export STRESSNG_ITERATIONS=2
+export STRESSNG_TESTNAME=mmap
+
+export MMTESTS_VMS_IP=""

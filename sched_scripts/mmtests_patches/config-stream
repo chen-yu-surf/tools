@@ -1,0 +1,20 @@
+export MMTESTS="stream"
+
+. $SHELLPACK_INCLUDE/include-sizes.sh
+get_numa_details
+
+# List of monitors
+#export RUN_MONITOR=yes
+#export MONITORS_ALWAYS=
+#export MONITORS_GZIP="proc-vmstat top"
+#export MONITORS_WITH_LATENCY="vmstat"
+#export MONITOR_UPDATE_FREQUENCY=10
+
+# stream
+#export STREAM_SIZE=$((128000000))
+export STREAM_SIZE=$((1048576*512))
+export STREAM_THREADS=$NUMLLCS
+export STREAM_METHOD=omp
+export STREAM_ITERATIONS=7
+export STREAM_BUILD_FLAGS="-lm -Ofast"
+export MMTESTS_IGNORE_MIRROR=yes

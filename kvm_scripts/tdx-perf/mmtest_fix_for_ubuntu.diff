@@ -1,0 +1,36 @@
+diff --git a/bin/install-depends b/bin/install-depends
+index e0052f27..52a80f6a 100755
+--- a/bin/install-depends
++++ b/bin/install-depends
+@@ -28,7 +28,7 @@ my %package_map = (
+ 	"debian::binutils-devel"		=> "binutils-dev",
+ 	"debian::blas-devel"			=> "libblas-dev",
+ 	"debian::btrfsprogs"			=> "btrfs-progs",
+-	"debian::cpupower"			=> "linux-cpupower",
++	"debian::cpupower-gui"			=> "cpupower-gui",
+ 	"debian::diffutils"			=> "diff",
+ 	"debian::expect-devel"			=> "tcl-expect-dev",
+ 	"debian::gcc-32bit"			=> "gcc-multilib",
+diff --git a/run-kvm.sh b/run-kvm.sh
+index 6e2f8d8e..afaba610 100755
+--- a/run-kvm.sh
++++ b/run-kvm.sh
+@@ -170,7 +170,8 @@ fi
+ # for coordination of the test runs). So, we add it (and while there, add
+ # AUTO_PACKAGE_INSTALL too).
+ if [ ! -z $MMTESTS_HOST_IP ]; then
+-	install-depends expect netcat-openbsd iputils
++	#install-depends expect netcat-openbsd iputils
++	install-depends expect netcat-openbsd iputils-arping iputils-ping iputils-tracepath iputils-clockdiff
+ 
+ 	install-depends gnu_parallel
+ 	if ! command -v parallel &> /dev/null ; then
+@@ -219,7 +220,7 @@ if [ "$STAP_USED" != "" ]; then
+ 	fixup_stap
+ fi
+ 
+-install-depends openssh-clients
++install-depends openssh-client
+ 
+ install_numad
+ install_tuned

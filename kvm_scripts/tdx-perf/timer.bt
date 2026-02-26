@@ -1,0 +1,32 @@
+#!/usr/bin/env bpftrace
+
+enum hrtimer_mode {
+    HRTIMER_MODE_ABS = 0x0,
+    HRTIMER_MODE_REL = 0x1,
+    HRTIMER_MODE_PINNED = 0x02,
+    HRTIMER_MODE_ABS_PINNED = 0x02,
+    HRTIMER_MODE_REL_PINNED = 0x03,
+    HRTIMER_MODE_SOFT = 0x04,
+    HRTIMER_MODE_ABS_SOFT = 0x04,
+    HRTIMER_MODE_REL_SOFT = 0x05,
+    HRTIMER_MODE_PINNED_SOFT = 0x06,
+    HRTIMER_MODE_ABS_PINNED_SOFT = 0x06,
+    HRTIMER_MODE_REL_PINNED_SOFT = 0x07,
+};
+
+BEGIN
+{
+	printf("Tracing timer ... Hit Ctrl-C to end.\n");
+}
+
+tracepoint:timer:hrtimer_start {
+    @counts_hrtimer[args->function] = count();
+}
+
+tracepoint:timer:timer_start {
+    @counts_timer[args->function] = count();
+}
+
+END
+{
+}

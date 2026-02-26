@@ -1,0 +1,99 @@
+#!/usr/bin/env bpftrace
+#include <linux/sched.h>
+
+BEGIN
+{
+	printf("Tracing CPU scheduler... Hit Ctrl-C to end.\n");
+}
+
+/*
+tracepoint:sched:sched_switch
+{
+	if (args->next_comm == "sender") {
+		@qtime[args->next_pid] = nsecs;
+	}
+
+	if (args->prev_comm == "sender") {
+		$ns = @qtime[args->prev_pid];
+		if (args->prev_state == TASK_RUNNING) {
+			if ($ns) {
+				@usecs_before_preempted = hist((nsecs - $ns) / 1000);
+				delete(@qtime[args->prev_pid]);
+			}
+			@sender_preempt = count();
+		} else {
+			if ($ns) {
+				@usecs_before_sleep = hist((nsecs - $ns) / 1000);
+				delete(@qtime[args->prev_pid]);
+			}
+			@sender_sleep = count();
+		}
+	}
+}
+*/
+
+/*
+
+kretfunc:select_task_rq_fair
+{
+        $p = (struct task_struct *)args->p;
+        if ($p->comm == "tbench") {
+                if ($p->thread_info.cpu != retval) {
+                        @wakeup_migrate_tbench = count();
+                } else {
+                        @wakeup_prev_tbench = count();
+                }
+        }
+        if ($p->comm == "tbench_srv") {
+                if ($p->thread_info.cpu != retval) {
+                        @wakeup_migrate_tbench_server = count();
+                } else {
+                        @wakeup_prev_tbench_server = count();
+                }
+        }
+}
+
+tracepoint:sched:sched_move_numa
+{
+	@move_numa_cnt = count();
+}
+
+tracepoint:sched:sched_stick_numa
+{
+	@stick_numa_cnt = count();
+}
+
+tracepoint:sched:sched_swap_numa
+{
+	@swap_numa_cnt = count();
+}
+
+tracepoint:sched:sched_vma_skip_numa
+{
+	@skip_vma_numa_cnt = count();
+}
+*/
+
+/*
+kprobe:check_preempt_curr
+{
+	@check_preempt_curr[kstack] = count();
+}
+*/
+
+/*
+interval:s:10
+{
+	time("\n%H:%M:%S scheduler statistics: \n");
+	print(@sender_preempt);
+	clear(@sender_preempt);
+
+}
+*/
+
+END
+{
+	/*
+	clear(@sender_preempt);
+	*/
+}

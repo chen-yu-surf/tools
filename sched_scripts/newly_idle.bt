@@ -1,0 +1,29 @@
+#!/usr/bin/env bpftrace
+/*
+ * Trace the update_sd_lb_stats
+ */#include <linux/sched.h>
+BEGIN
+{
+        printf("Tracing CPU scheduler load balancer... Hit Ctrl-C to end.\n");
+
+}
+
+kprobe:newidle_balance
+{
+	/*cpu becomes idle */
+	@becomeidle_cnt[cpu] = count();
+}
+
+kprobe:load_balance
+{
+	/*idle type */
+	$idle = arg3;
+	/*newidle load balance */
+	if ($idle == 2) {
+		@newidle_cnt[cpu] = count();
+	}
+}
+
+END
+{
+}

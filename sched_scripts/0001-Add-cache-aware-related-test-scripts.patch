@@ -1,0 +1,947 @@
+From 16d5efc7f322538b4ee7c5923e5c3828ec918c99 Mon Sep 17 00:00:00 2001
+From: Chen Yu <yu.c.chen@intel.com>
+Date: Thu, 26 Feb 2026 11:04:10 +0800
+Subject: [PATCH] Add cache aware related test scripts
+
+Signed-off-by: Chen Yu <yu.c.chen@intel.com>
+---
+ config-netperf-mmtests                      |  19 +++
+ config-schbench                             |  31 +++++
+ config-scheduler-hackbench                  |  39 ++++++
+ config-stream                               |  20 +++
+ config-workload-stressng-context            |  18 +++
+ hackbench.sh                                |  13 ++
+ launch_split.sh                             |  64 ++++++++++
+ netperf.sh                                  |  30 +++++
+ schbench.sh                                 |  10 ++
+ schbench_new_parser/calc_average.py         | 130 +++++++++++++++++++
+ schbench_new_parser/check_compare.py        | 132 ++++++++++++++++++++
+ schbench_new_parser/check_compare_backup.py | 102 +++++++++++++++
+ schbench_new_parser/extract_schbench.py     |  92 ++++++++++++++
+ schbench_new_parser/start_parse.sh          |  33 +++++
+ shellpack_src/src/schbench/schbench-bench   |   2 +-
+ shellpack_src/src/schbench/schbench-install |   2 +-
+ shellpack_src/src/stream/stream-bench       |   2 +-
+ shellpack_src/src/stream/stream-install     |   2 +-
+ stream.sh                                   |   9 ++
+ stress-ng.sh                                |  11 ++
+ 20 files changed, 757 insertions(+), 4 deletions(-)
+ create mode 100644 config-netperf-mmtests
+ create mode 100644 config-schbench
+ create mode 100644 config-scheduler-hackbench
+ create mode 100644 config-stream
+ create mode 100644 config-workload-stressng-context
+ create mode 100755 hackbench.sh
+ create mode 100755 launch_split.sh
+ create mode 100755 netperf.sh
+ create mode 100755 schbench.sh
+ create mode 100644 schbench_new_parser/calc_average.py
+ create mode 100644 schbench_new_parser/check_compare.py
+ create mode 100644 schbench_new_parser/check_compare_backup.py
+ create mode 100644 schbench_new_parser/extract_schbench.py
+ create mode 100755 schbench_new_parser/start_parse.sh
+ create mode 100755 stream.sh
+ create mode 100755 stress-ng.sh
+
+diff --git a/config-netperf-mmtests b/config-netperf-mmtests
+new file mode 100644
+index 00000000..a120a81e
+--- /dev/null
++++ b/config-netperf-mmtests
+@@ -0,0 +1,19 @@
++#export MMTESTS="netperf-ipv4-udp-rr netperf-ipv4-tcp-rr"
++export MMTESTS="netperf-ipv4-tcp-rr"
++
++# List of monitors
++#export RUN_MONITOR=yes
++#export MONITORS_ALWAYS=
++#export MONITORS_GZIP="proc-vmstat mpstat turbostat"
++#export MONITORS_WITH_LATENCY="vmstat"
++#export MONITOR_UPDATE_FREQUENCY=10
++
++# NetPerf
++export NETPERF_BUFFER_SIZES=1
++export NETPERF_ITERATIONS=5
++export NETPERF_CONFIDENCE_MIN=3
++export NETPERF_CONFIDENCE_MAX=3
++export NETPERF_CONFIDENCE_LEVEL=95,5
++export NETPERF_NR_PAIRS=
++
++export MMTESTS_IGNORE_MIRROR=yes
+diff --git a/config-schbench b/config-schbench
+new file mode 100644
+index 00000000..1ad870f2
+--- /dev/null
++++ b/config-schbench
+@@ -0,0 +1,31 @@
++### schbench is a latency measurement benchmark that uses a mix of worker and
++### messaging threads. The worker threads wait for messages to come in which
++### include a timestamp of when they were queued and records how long it took
++### to receive the message. The message threads send messages and sleep for
++### a small random amount of time in between. The benchmark reports quartiles
++### of wakeup times of the worker threads with a specific interest in the
++### worse-case outliers.
++###
++### In this configuration, the number of threads is bound by the size of a
++### NUMA node to minimise the chances that delays reported are due to
++### remote access latencies.
++###
++
++export MMTESTS="schbench"
++
++# List of monitors
++#export RUN_MONITOR=yes
++#export MONITORS_ALWAYS=
++#export MONITORS_GZIP="proc-vmstat mpstat turbostat"
++#export MONITORS_WITH_LATENCY="vmstat"
++#export MONITOR_PERF_EVENTS=cpu-migrations,context-switches
++#export MONITOR_UPDATE_FREQUENCY=10
++
++# schbench
++export SCHBENCH_RUNTIME=100
++export SCHBENCH_MESSAGE_THREADS=$NUMNODES
++export SCHBENCH_MIN_WORKER_THREADS=2
++export SCHBENCH_MAX_WORKER_THREADS=$((NUMCPUS/NUMNODES))
++export SCHBENCH_INTERVAL=10
++export MMTEST_ITERATIONS=3
++export MMTESTS_IGNORE_MIRROR=yes
+diff --git a/config-scheduler-hackbench b/config-scheduler-hackbench
+new file mode 100644
+index 00000000..b2b115d1
+--- /dev/null
++++ b/config-scheduler-hackbench
+@@ -0,0 +1,39 @@
++### hackbench a general scheduler benchmark and stress test that is
++### sensitive to regressions in the scheduler fast-path. It creates groups
++### of threads or processes (depending on configuration) that communicate
++### via pipes or sockets (depending on configuration).
++###
++### Note that while hackbench is often considered to be a scheduler benchmark,
++### it is particularly weak when used with pipes. Given multiple senders and
++### receivers sharing pipes that are unsynchronised, it is dominated heavily
++### by a mutex protecting the pipe structures and a spinlock protecting the
++### queue for wakeups. A significant percentage of time is spend acquiring
++### and releasing those locks as well as the inevitable bounces of cache
++### line data as waker/wakee processes do not run on the same CPUs but
++### instead select CPUs that are nearby during wakeups.
++#export MMTESTS="hackbench-thread-pipes hackbench-thread-sockets"
++
++export MMTESTS="hackbench-thread-pipes"
++# List of monitors
++#export RUN_MONITOR=yes
++#export MONITORS_ALWAYS=
++#export MONITORS_GZIP="proc-vmstat perf-time-stat mpstat turbostat"
++#export MONITORS_WITH_LATENCY="vmstat"
++#export MONITOR_PERF_EVENTS=cpu-migrations,context-switches
++#export MONITOR_UPDATE_FREQUENCY=10
++
++# HackBench
++export HACKBENCH_ITERATIONS=3
++export HACKBENCH_MIN_GROUPS=1
++export HACKBENCH_MAX_GROUPS=16
++if [[ `uname -m` =~ i.86 ]]; then
++	export HACKBENCH_MAX_GROUPS=128
++fi
++if [ $HACKBENCH_MAX_GROUPS -gt 296 ]; then
++	export HACKBENCH_MAX_GROUPS=296
++fi
++export HACKBENCH_LOOPS=1000000
++export MMTESTS_THREAD_CUTOFF=
++
++# when run in container
++export CONTAINER_NO_PIDS_LIMIT=yes
+diff --git a/config-stream b/config-stream
+new file mode 100644
+index 00000000..3ba4516b
+--- /dev/null
++++ b/config-stream
+@@ -0,0 +1,20 @@
++export MMTESTS="stream"
++
++. $SHELLPACK_INCLUDE/include-sizes.sh
++get_numa_details
++
++# List of monitors
++#export RUN_MONITOR=yes
++#export MONITORS_ALWAYS=
++#export MONITORS_GZIP="proc-vmstat top"
++#export MONITORS_WITH_LATENCY="vmstat"
++#export MONITOR_UPDATE_FREQUENCY=10
++
++# stream
++export STREAM_SIZE=$((128000000))
++#export STREAM_SIZE=$((1048576*512))
++export STREAM_THREADS=$NUMLLCS
++export STREAM_METHOD=omp
++export STREAM_ITERATIONS=9
++export STREAM_BUILD_FLAGS="-lm -Ofast"
++export MMTESTS_IGNORE_MIRROR=yes
+diff --git a/config-workload-stressng-context b/config-workload-stressng-context
+new file mode 100644
+index 00000000..53186320
+--- /dev/null
++++ b/config-workload-stressng-context
+@@ -0,0 +1,18 @@
++### stressng context switching stress test
++###
++
++export MMTESTS="stressng"
++
++# List of monitors
++#export RUN_MONITOR=yes
++#export MONITORS_ALWAYS=
++#export MONITORS_GZIP="proc-vmstat mpstat turbostat"
++#export MONITORS_WITH_LATENCY="vmstat"
++#export MONITOR_UPDATE_FREQUENCY=10
++
++# schbench
++export STRESSNG_MIN_THREADS=1
++export STRESSNG_MAX_THREADS=$((NUMCPUS*2))
++export STRESSNG_RUNTIME=60
++export STRESSNG_ITERATIONS=5
++export STRESSNG_TESTNAME=context
+diff --git a/hackbench.sh b/hackbench.sh
+new file mode 100755
+index 00000000..99ea4f35
+--- /dev/null
++++ b/hackbench.sh
+@@ -0,0 +1,13 @@
++#!/bin/bash
++
++cd tools/sched_scripts/schedtests
++
++echo 0 > /sys/kernel/debug/sched/llc_enabled
++./run-schedtests.sh hackbench baseline-hackbench
++
++sleep 5
++sync
++echo 1 > /sys/kernel/debug/sched/llc_enabled
++./run-schedtests.sh hackbench schedcache-hackbench
++
++cd -
+diff --git a/launch_split.sh b/launch_split.sh
+new file mode 100755
+index 00000000..40ac5523
+--- /dev/null
++++ b/launch_split.sh
+@@ -0,0 +1,64 @@
++#!/bin/bash
++
++min_job=$(($(nproc) / 4))
++N=("$min_job" "$((min_job * 2))" "$((min_job * 3))" "$((min_job * 4))")
++
++nr_nodes=$(numactl --hardware | grep 'available:' | awk '{print $2}')
++min_threads=2
++max_threads=$(((nproc)/nr_nodes))
++
++pepc pstates config --governor performance
++pepc pstates config --turbo off
++pepc cstates config --disable C1E
++pepc cstates config --disable C6
++
++echo 1 > /proc/sys/kernel/numa_balancing
++echo 0 > /proc/sys/kernel/sched_schedstats
++
++./hackbench.sh
++./stream.sh
++./schbench.sh
++./stress-ng.sh
++./netperf.sh
++
++rm -rf all_result_compare.txt
++echo "Start hackbench thread pipes" >> all_result_compare.txt
++cd tools/sched_scripts/schedtests
++./report.py -b baseline-hackbench -c schedcache-hackbench -t hackbench >> ../../../all_result_compare.txt
++cd -
++echo "End hackbench thread pipes" >> all_result_compare.txt
++echo >> all_result_compare.txt
++
++echo "Start stream" >> all_result_compare.txt
++./bin/compare-mmtests.pl --directory work/log --benchmark stream --name baseline-stream,schedcache-stream >> all_result_compare.txt
++echo "End stream" >> all_result_compare.txt
++
++echo >> all_result_compare.txt
++
++echo "Start stress-ng ctx" >> all_result_compare.txt
++./bin/compare-mmtests.pl --directory work/log --benchmark stressng --names baseline-stressng,schedcache-stressng >> all_result_compare.txt
++echo "End stress-ng ctx" >> all_result_compare.txt
++
++echo >> all_result_compare.txt
++
++echo "Start netperf" >> all_result_compare.txt
++for Npairs in "${N[@]}"; do
++	echo " start netperf-${Npairs}pairs" >> all_result_compare.txt
++	./bin/compare-mmtests.pl --directory work/log --benchmark netperf-ipv4-tcp-rr --names "baseline-netperf-${Npairs}pairs,schedcache-netperf-${Npairs}pairs" >>all_result_compare.txt
++	echo " end netperf-${Npairs}pairs" >> all_result_compare.txt
++	echo
++done
++echo "End netperf" >> all_result_compare.txt
++
++echo >> all_result_compare.txt
++
++echo "Start schbench" >> all_result_compare.txt
++cd schbench_new_parser
++rm -rf tmp
++mkdir tmp
++cp -r ../work/log/baseline-schbench/ ./tmp
++cp -r ../work/log/schedcache-schbench/ ./tmp
++./start_parse.sh
++cat compare_final.log >> ../all_result_compare.txt
++cd ..
++echo "End schbench" >> all_result_compare.txt
+diff --git a/netperf.sh b/netperf.sh
+new file mode 100755
+index 00000000..ad1b603c
+--- /dev/null
++++ b/netperf.sh
+@@ -0,0 +1,30 @@
++#!/bin/bash
++
++min_job=$(($(nproc) / 4))
++
++pairlist="$min_job $(($min_job * 2)) $(($min_job * 3)) $(($min_job * 4))"
++
++####################################################
++
++echo 0 > /sys/kernel/debug/sched/llc_enabled
++
++#netperf
++for pair in $pairlist; do
++	cp config-netperf-mmtests netperf-cfg
++	sed -i "s/NR_PAIRS=/NR_PAIRS=$pair/g" netperf-cfg
++	./run-mmtests.sh --no-monitor --config netperf-cfg baseline-netperf-${pair}pairs
++	sleep 5;
++	sync;
++done
++
++#################################################################
++
++echo 1 > /sys/kernel/debug/sched/llc_enabled
++
++for pair in $pairlist; do
++	cp config-netperf-mmtests netperf-cfg
++	sed -i "s/NR_PAIRS=/NR_PAIRS=$pair/g" netperf-cfg
++	./run-mmtests.sh --no-monitor --config netperf-cfg schedcache-netperf-${pair}pairs
++	sleep 5;
++	sync;
++done
+diff --git a/schbench.sh b/schbench.sh
+new file mode 100755
+index 00000000..ba9cb906
+--- /dev/null
++++ b/schbench.sh
+@@ -0,0 +1,10 @@
++#!/bin/bash
++
++
++echo 0 > /sys/kernel/debug/sched/llc_enabled
++./run-mmtests.sh --no-monitor --config config-schbench baseline-schbench
++sleep 5
++sync
++
++echo 1 > /sys/kernel/debug/sched/llc_enabled
++./run-mmtests.sh --no-monitor --config config-schbench schedcache-schbench
+diff --git a/schbench_new_parser/calc_average.py b/schbench_new_parser/calc_average.py
+new file mode 100644
+index 00000000..598ab6bb
+--- /dev/null
++++ b/schbench_new_parser/calc_average.py
+@@ -0,0 +1,130 @@
++import sys
++import math
++
++def calculate_statistics(file_path):
++    """
++    Calculate mean and standard deviation for each of the four columns in the input file
++
++    Args:
++        file_path (str): Path to the input file containing the data
++
++    Returns:
++        list: List of dictionaries containing mean and std for each column
++    """
++    # Initialize lists to store values from each column
++    column1 = []  # Wakeup Latencies percentiles 99.0th
++    column2 = []  # Request Latencies percentiles 99.0th
++    column3 = []  # RPS percentiles 50.0th
++    column4 = []  # average rps
++
++    # Read and parse the file
++    with open(file_path, 'r') as file:
++        for line_num, line in enumerate(file, 1):
++            line = line.strip()
++            if not line:
++                continue
++
++            # Split line into values
++            parts = line.split()
++            if len(parts) != 4:
++                print(f"Warning: Line {line_num} does not contain exactly 4 values. Skipping.")
++                continue
++
++            try:
++                # Convert to appropriate numeric types and add to columns
++                column1.append(float(parts[0]))
++                column2.append(float(parts[1]))
++                column3.append(float(parts[2]))
++                column4.append(float(parts[3]))
++            except ValueError:
++                print(f"Warning: Could not convert values in line {line_num} to numbers. Skipping.")
++                continue
++
++    # Check if we have any data
++    if not column1:
++        print("Error: No valid data found in the file.")
++        return None
++
++    # Function to calculate mean
++    def mean(values):
++        return sum(values) / len(values)
++
++    # Function to calculate standard deviation
++    def std_dev(values, mean_val):
++        if len(values) <= 1:
++            return 0.0
++        variance = sum((x - mean_val) **2 for x in values) / (len(values) - 1)
++        return math.sqrt(variance)
++
++    # Calculate statistics for each column
++    stats = [
++        {
++            'name': 'Wakeup Latencies 99.0th',
++            'mean': mean(column1),
++            'std': std_dev(column1, mean(column1))
++        },
++        {
++            'name': 'Request Latencies 99.0th',
++            'mean': mean(column2),
++            'std': std_dev(column2, mean(column2))
++        },
++        {
++            'name': 'RPS 50.0th',
++            'mean': mean(column3),
++            'std': std_dev(column3, mean(column3))
++        },
++        {
++            'name': 'Average RPS',
++            'mean': mean(column4),
++            'std': std_dev(column4, mean(column4))
++        }
++    ]
++
++    return stats
++
++def write_statistics_to_file(stats, output_file):
++    """
++    Write statistics to output file in a single line, space-separated
++
++    Args:
++        stats (list): List of statistics dictionaries
++        output_file (str): Path to the output file
++    """
++    # Prepare values in order: mean1 std1 mean2 std2 mean3 std3 mean4 std4
++    values = []
++    for stat in stats:
++        values.append(f"{stat['mean']:.2f}")
++        values.append(f"{stat['std']:.2f}")
++
++    # Join all values with spaces
++    line = ' '.join(values) + '\n'
++
++    # Write to file
++    with open(output_file, 'w') as f:
++        f.write(line)
++
++def main():
++    # Check if correct number of arguments is provided
++    if len(sys.argv) != 3:
++        print("Usage: python calc_average.py <input_file_path> <output_file_path>")
++        sys.exit(1)
++
++    input_file = sys.argv[1]
++    output_file = sys.argv[2]
++
++    # Calculate statistics
++    stats = calculate_statistics(input_file)
++
++    if stats:
++        # Print results with 2 decimal places
++        print("Statistics (mean ± standard deviation):")
++        for stat in stats:
++            print(f"{stat['name']}: {stat['mean']:.2f} ± {stat['std']:.2f}")
++
++        # Write results to output file
++        write_statistics_to_file(stats, output_file)
++        print(f"Statistics written to {output_file}")
++
++if __name__ == "__main__":
++    main()
++
+diff --git a/schbench_new_parser/check_compare.py b/schbench_new_parser/check_compare.py
+new file mode 100644
+index 00000000..ff9371f9
+--- /dev/null
++++ b/schbench_new_parser/check_compare.py
+@@ -0,0 +1,132 @@
++import sys
++
++def read_statistics_file(file_path):
++    """
++    Read and parse statistics from a file generated by calc_average.py
++    
++    Args:
++        file_path (str): Path to the statistics file
++        
++    Returns:
++        list: List of float values in order: 
++             [mean1, std1, mean2, std2, mean3, std3, mean4, std4]
++        None: If file reading or parsing fails
++    """
++    try:
++        with open(file_path, 'r') as file:
++            line = file.readline().strip()
++            if not line:
++                print(f"Error: File {file_path} is empty")
++                return None
++                
++            values = list(map(float, line.split()))
++            if len(values) != 8:
++                print(f"Error: File {file_path} does not contain exactly 8 values")
++                return None
++                
++            return values
++    except Exception as e:
++        print(f"Error reading {file_path}: {str(e)}")
++        return None
++
++def calculate_percentage_difference(base_value, compare_value, is_latency_metric):
++    """
++    Calculate percentage difference between two values with appropriate sign based on metric type
++    
++    Args:
++        base_value (float): Base value (denominator)
++        compare_value (float): Value to compare against base
++        is_latency_metric (bool): True if metric is latency (lower is better)
++        
++    Returns:
++        tuple: (float percentage, str formatted percentage with sign)
++    """
++    if base_value == 0:
++        return (0.0, "0.00%")
++    
++    # Calculate raw percentage difference
++    percentage = ((compare_value - base_value) / base_value) * 100
++    
++    # Determine sign based on metric type and percentage
++    if is_latency_metric:
++        # For latency metrics: lower is better
++        # Positive percentage (compare > base) → performance worse → "-" sign
++        # Negative percentage (compare < base) → performance better → "+" sign
++        if percentage > 0:
++            sign = "-"
++        elif percentage < 0:
++            sign = "+"
++        else:
++            sign = ""
++    else:
++        # For RPS metrics: higher is better
++        # Positive percentage (compare > base) → performance better → "+" sign
++        # Negative percentage (compare < base) → performance worse → "-" sign
++        if percentage > 0:
++            sign = "+"
++        elif percentage < 0:
++            sign = "-"
++        else:
++            sign = ""
++    
++    # Format with absolute value and appropriate sign
++    formatted = f"{sign}{abs(percentage):.2f}%"
++    return (percentage, formatted)
++
++def main():
++    # Check if correct number of arguments is provided
++    if len(sys.argv) != 3:
++        print("Usage: python check_compare.py <base_file> <compare_file>")
++        print("Example: python check_compare.py 1.log 2.log")
++        sys.exit(1)
++    
++    base_file = sys.argv[1]
++    compare_file = sys.argv[2]
++    
++    # Read statistics from both files
++    base_stats = read_statistics_file(base_file)
++    compare_stats = read_statistics_file(compare_file)
++    
++    if not base_stats or not compare_stats:
++        sys.exit(1)
++    
++    # Define metric names and whether they are latency metrics (lower is better)
++    metrics = [
++        {"name": "Wakeup Latencies 99.0th", "is_latency": True},
++        {"name": "Request Latencies 99.0th", "is_latency": True},
++        {"name": "RPS 50.0th", "is_latency": False},
++        {"name": "Average RPS", "is_latency": False}
++    ]
++    
++    # Print header
++    #print("Comparison Results (performance change):")
++    #print(f"Base file: {base_file}")
++    #print(f"Compare file: {compare_file}\n")
++    print(f"{'Metric':<30} {'Base (mean±std)':<20} {'Compare (mean±std)':<20} {'Change':<10}")
++    print("-" * 85)
++    
++    # Calculate and print results for each metric
++    for i, metric in enumerate(metrics):
++        # Extract mean and std values for current metric
++        mean_index = i * 2
++        std_index = mean_index + 1
++        
++        base_mean = base_stats[mean_index]
++        compare_mean = compare_stats[mean_index]
++        base_std = base_stats[std_index]
++        compare_std = compare_stats[std_index]
++        
++        # Calculate percentage difference with appropriate sign
++        _, diff_str = calculate_percentage_difference(
++            base_mean, compare_mean, metric["is_latency"]
++        )
++        
++        # Format output line
++        metric_name = metric["name"]
++        base_str = f"{base_mean:.2f}({base_std:.2f})"
++        compare_str = f"{compare_mean:.2f}({compare_std:.2f})"
++        
++        print(f"{metric_name:<30} {base_str:<20} {compare_str:<20} {diff_str:<10}")
++
++if __name__ == "__main__":
++    main()
+diff --git a/schbench_new_parser/check_compare_backup.py b/schbench_new_parser/check_compare_backup.py
+new file mode 100644
+index 00000000..b3ac31ac
+--- /dev/null
++++ b/schbench_new_parser/check_compare_backup.py
+@@ -0,0 +1,102 @@
++import sys
++
++def read_statistics_file(file_path):
++    """
++    Read and parse statistics from a file generated by calc_average.py
++    
++    Args:
++        file_path (str): Path to the statistics file
++        
++    Returns:
++        list: List of float values in order: 
++             [mean1, std1, mean2, std2, mean3, std3, mean4, std4]
++        None: If file reading or parsing fails
++    """
++    try:
++        with open(file_path, 'r') as file:
++            line = file.readline().strip()
++            if not line:
++                print(f"Error: File {file_path} is empty")
++                return None
++                
++            values = list(map(float, line.split()))
++            if len(values) != 8:
++                print(f"Error: File {file_path} does not contain exactly 8 values")
++                return None
++                
++            return values
++    except Exception as e:
++        print(f"Error reading {file_path}: {str(e)}")
++        return None
++
++def calculate_percentage_difference(base_value, compare_value):
++    """
++    Calculate percentage difference between two values
++    
++    Args:
++        base_value (float): Base value (denominator)
++        compare_value (float): Value to compare against base
++        
++    Returns:
++        float: Percentage difference
++    """
++    if base_value == 0:
++        return 0.0  # Avoid division by zero
++    return ((compare_value - base_value) / base_value) * 100
++
++def main():
++    # Check if correct number of arguments is provided
++    if len(sys.argv) != 3:
++        print("Usage: python check_compare.py <base_file> <compare_file>")
++        print("Example: python check_compare.py 1.log 2.log")
++        sys.exit(1)
++    
++    base_file = sys.argv[1]
++    compare_file = sys.argv[2]
++    
++    # Read statistics from both files
++    base_stats = read_statistics_file(base_file)
++    compare_stats = read_statistics_file(compare_file)
++    
++    if not base_stats or not compare_stats:
++        sys.exit(1)
++    
++    # Define metric names
++    metrics = [
++        "Wakeup Latencies 99.0th",
++        "Request Latencies 99.0th",
++        "RPS 50.0th",
++        "Average RPS"
++    ]
++    
++    # Print header
++    print("Comparison Results (percentage difference from base file):")
++    print(f"Base file: {base_file}")
++    print(f"Compare file: {compare_file}\n")
++    print(f"{'Metric':<30} {'Base (mean±std)':<20} {'Compare (mean±std)':<20} {'Difference':<10}")
++    print("-" * 80)
++    
++    # Calculate and print results for each metric
++    for i in range(4):
++        # Extract mean and std values for current metric
++        mean_index = i * 2
++        std_index = mean_index + 1
++        
++        base_mean = base_stats[mean_index]
++        compare_mean = compare_stats[mean_index]
++        mean_diff = calculate_percentage_difference(base_mean, compare_mean)
++        
++        base_std = base_stats[std_index]
++        compare_std = compare_stats[std_index]
++        
++        # Format output line
++        metric_name = metrics[i]
++        base_str = f"{base_mean:.2f}({base_std:.2f})"
++        compare_str = f"{compare_mean:.2f}({compare_std:.2f})"
++        diff_str = f"{mean_diff:.2f}%"
++        
++        print(f"{metric_name:<30} {base_str:<20} {compare_str:<20} {diff_str:<10}")
++
++if __name__ == "__main__":
++    main()
++
+diff --git a/schbench_new_parser/extract_schbench.py b/schbench_new_parser/extract_schbench.py
+new file mode 100644
+index 00000000..4150869b
+--- /dev/null
++++ b/schbench_new_parser/extract_schbench.py
+@@ -0,0 +1,92 @@
++import re
++import sys
++
++def parse_schbench_output(file_path):
++    """
++    Parse schbench output file to extract specific metrics from the last measurement
++    
++    Args:
++        file_path (str): Path to the schbench output file
++        
++    Returns:
++        dict: Dictionary containing the extracted metrics
++    """
++    # Read the entire file content
++    with open(file_path, 'r') as file:
++        content = file.read()
++    
++    # Patterns to find the last occurrences of each section
++    # Look for the last Wakeup Latencies section with 99.0th value
++    wakeup_pattern = r'Wakeup Latencies percentiles \(usec\) runtime \d+ \(s\)[\s\S]*?99\.0th:\s*(\d+)'
++    wakeup_matches = re.findall(wakeup_pattern, content)
++    last_wakeup_99 = wakeup_matches[-1] if wakeup_matches else None
++    
++    # Look for the last Request Latencies section with 99.0th value
++    request_pattern = r'Request Latencies percentiles \(usec\) runtime \d+ \(s\)[\s\S]*?99\.0th:\s*(\d+)'
++    request_matches = re.findall(request_pattern, content)
++    last_request_99 = request_matches[-1] if request_matches else None
++    
++    # Look for the last RPS percentiles section with 50.0th value
++    rps_pattern = r'RPS percentiles \(requests\) runtime \d+ \(s\)[\s\S]*?50\.0th:\s*(\d+)'
++    rps_matches = re.findall(rps_pattern, content)
++    last_rps_50 = rps_matches[-1] if rps_matches else None
++    
++    # Look for the last average rps value
++    avg_rps_pattern = r'average rps:\s*([\d.]+)'
++    avg_rps_matches = re.findall(avg_rps_pattern, content)
++    last_avg_rps = avg_rps_matches[-1] if avg_rps_matches else None
++    
++    # Return the extracted metrics as a dictionary
++    return {
++        'last_wakeup_99th_percentile': last_wakeup_99,
++        'last_request_99th_percentile': last_request_99,
++        'last_rps_50th_percentile': last_rps_50,
++        'last_average_rps': last_avg_rps
++    }
++
++def write_results_to_file(metrics, output_file):
++    """
++    Write extracted metrics to a file in space-separated format
++    
++    Args:
++        metrics (dict): Dictionary containing the extracted metrics
++        output_file (str): Path to the output file
++    """
++    # Extract values in order and convert to strings
++    values = [
++        str(metrics['last_wakeup_99th_percentile']),
++        str(metrics['last_request_99th_percentile']),
++        str(metrics['last_rps_50th_percentile']),
++        str(metrics['last_average_rps'])
++    ]
++    
++    # Join values with spaces
++    line = ' '.join(values) + '\n'
++    
++    # Append to the output file
++    with open(output_file, 'a') as f:
++        f.write(line)
++
++if __name__ == "__main__":
++    # Check if correct number of arguments is provided
++    if len(sys.argv) != 3:
++        print("Usage: python schbench_parser.py <input_file_path> <output_file_path>")
++        sys.exit(1)
++    
++    input_file = sys.argv[1]
++    output_file = sys.argv[2]
++    
++    # Parse the file and get the metrics
++    metrics = parse_schbench_output(input_file)
++    
++    # Print the results to console
++    print("Extracted metrics from the last measurement:")
++    print(f"Last Wakeup Latencies 99.0th percentile: {metrics['last_wakeup_99th_percentile']} usec")
++    print(f"Last Request Latencies 99.0th percentile: {metrics['last_request_99th_percentile']} usec")
++    print(f"Last RPS 50.0th percentile: {metrics['last_rps_50th_percentile']} requests")
++    print(f"Last average rps: {metrics['last_average_rps']}")
++    
++    # Write results to file in append mode
++    write_results_to_file(metrics, output_file)
++    print(f"Results appended to {output_file}")
++    
+diff --git a/schbench_new_parser/start_parse.sh b/schbench_new_parser/start_parse.sh
+new file mode 100755
+index 00000000..5ad4717e
+--- /dev/null
++++ b/schbench_new_parser/start_parse.sh
+@@ -0,0 +1,33 @@
++
++#replace with your directory provided by mmtests
++RESULT_DIR_BASE="tmp/baseline-schbench/"
++RESULT_DIR_CHANGE="tmp/schedcache-schbench/"
++
++nr_nodes=$(numactl --hardware | grep 'available:' | awk '{print $2}')
++min_threads=2
++max_threads=$(($(nproc)/nr_nodes))
++iteration=3
++
++rm -rf *.log
++
++for ((i=0; i<$iteration; i++)); do
++	t=${min_threads}
++	while [ $t -le ${max_threads} ]; do
++		python3 ./extract_schbench.py ${RESULT_DIR_BASE}"iter-"$i"/schbench/logs/schbench-"$t".log" baseline_total_thread$t.log
++		python3 ./extract_schbench.py ${RESULT_DIR_CHANGE}"iter-"$i"/schbench/logs/schbench-"$t".log" change_total_thread$t.log
++		t=$((t*2))
++	done
++done
++
++t=${min_threads}
++while [ $t -le ${max_threads} ]; do
++	python3 ./calc_average.py baseline_total_thread$t.log baseline_average_thread$t.log 
++	python3 ./calc_average.py change_total_thread$t.log change_average_thread$t.log 
++	python3 ./check_compare.py baseline_average_thread$t.log change_average_thread$t.log > compare_thread$t.log
++	echo "schbench thread = "$t >> compare_final.txt
++	cat  compare_thread$t.log >> compare_final.txt
++	echo "" >> compare_final.txt
++	t=$((t*2))
++done
++rm -rf *.log
++mv compare_final.txt compare_final.log
+diff --git a/shellpack_src/src/schbench/schbench-bench b/shellpack_src/src/schbench/schbench-bench
+index 8e3d6843..92f35a2c 100755
+--- a/shellpack_src/src/schbench/schbench-bench
++++ b/shellpack_src/src/schbench/schbench-bench
+@@ -27,7 +27,7 @@ SCHBENCH_MESSENGER_PIN=
+ 	monitor_pre_hook $LOGDIR_RESULTS $NR_THREADS
+ 
+ 	echo Running schbench $SCHBENCH_MESSAGE_THREADS messengers, $NR_THREADS workers
+-	BENCH_CMD=" ./schbench -z $SCHBENCH_INTERVAL -i $SCHBENCH_INTERVAL -r $SCHBENCH_RUNTIME -m $SCHBENCH_MESSAGE_THREADS -t $NR_THREADS"
++	BENCH_CMD=" ./schbench -r $SCHBENCH_RUNTIME -m $SCHBENCH_MESSAGE_THREADS -t $NR_THREADS"
+ 	[ "$SCHBENCH_DISABLE_SPINLOCK"	=  "yes" ]	&& BENCH_CMD+=" -L"
+ 	[ "$SCHBENCH_MESSENGER_PIN"	!= ""    ]	&& BENCH_CMD+=" -M $SCHBENCH_MESSENGER_PIN"
+ 	[ "$SCHBENCH_THINKTIME_OPS"	!= ""    ]	&& BENCH_CMD+=" -n $SCHBENCH_THINKTIME_OPS"
+diff --git a/shellpack_src/src/schbench/schbench-install b/shellpack_src/src/schbench/schbench-install
+index abaf61b1..c017b0d8 100644
+--- a/shellpack_src/src/schbench/schbench-install
++++ b/shellpack_src/src/schbench/schbench-install
+@@ -1,6 +1,6 @@
+ #!/bin/bash
+ ###SHELLPACK preamble schbench-install 6300b8f3a892
+-GIT_LOCATION=git://git.kernel.org/pub/scm/linux/kernel/git/mason/schbench.git
++GIT_LOCATION=https://github.com/masoncl/schbench.git
+ MIRROR_LOCATION="$WEBROOT/schbench/"
+ 
+ ###SHELLPACK parseargBegin
+diff --git a/shellpack_src/src/stream/stream-bench b/shellpack_src/src/stream/stream-bench
+index bf7afb7e..1de3758d 100755
+--- a/shellpack_src/src/stream/stream-bench
++++ b/shellpack_src/src/stream/stream-bench
+@@ -53,7 +53,7 @@ single-bind)
+ 	TASKSET="taskset -c $CPULIST"
+ 	;;
+ omp)
+-	gcc -DSTREAM_ARRAY_SIZE=$STREAM_ARRAY_ELEMENTS -fopenmp $STREAM_BUILD_FLAGS stream.c -o stream || die "Failed to compile stream binary"
++	gcc -DNTIMES=100 -DSTREAM_ARRAY_SIZE=$STREAM_ARRAY_ELEMENTS -fopenmp $STREAM_BUILD_FLAGS stream.c -o stream || die "Failed to compile stream binary"
+ 	export OMP_NUM_THREADS=$STREAM_THREADS
+ 	;;
+ esac
+diff --git a/shellpack_src/src/stream/stream-install b/shellpack_src/src/stream/stream-install
+index 2867d8b0..1bad0230 100644
+--- a/shellpack_src/src/stream/stream-install
++++ b/shellpack_src/src/stream/stream-install
+@@ -1,6 +1,6 @@
+ #!/bin/bash
+ ###SHELLPACK preamble stream-install 0
+-WEB_LOCATION="https://www.cs.virginia.edu/stream/FTP/Code/mysecond.c"
++WEB_LOCATION="https://raw.githubusercontent.com/jeffhammond/STREAM/refs/heads/master/mysecond.c"
+ MIRROR_LOCATION="$WEBROOT/stream/mysecond.c"
+ 
+ ###SHELLPACK parseargBegin
+diff --git a/stream.sh b/stream.sh
+new file mode 100755
+index 00000000..16204a6e
+--- /dev/null
++++ b/stream.sh
+@@ -0,0 +1,9 @@
++#!/bin/bash
++
++echo 0 > /sys/kernel/debug/sched/llc_enabled
++./run-mmtests.sh --no-monitor --config config-stream baseline-stream
++sleep 5
++sync
++
++echo 1 > /sys/kernel/debug/sched/llc_enabled
++./run-mmtests.sh --no-monitor --config config-stream schedcache-stream
+diff --git a/stress-ng.sh b/stress-ng.sh
+new file mode 100755
+index 00000000..ef095e23
+--- /dev/null
++++ b/stress-ng.sh
+@@ -0,0 +1,11 @@
++#!/bin/bash
++
++echo 0 > /sys/kernel/debug/sched/llc_enabled
++./run-mmtests.sh --no-monitor --config config-workload-stressng-context baseline-stressng
++sleep 5
++sync
++
++echo 1 > /sys/kernel/debug/sched/llc_enabled
++./run-mmtests.sh --no-monitor --config config-workload-stressng-context schedcache-stressng
++sleep 5
++sync
+-- 
+2.25.1
+

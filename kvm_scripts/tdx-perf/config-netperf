@@ -1,0 +1,13 @@
+export MMTESTS="netperf-ipv4-udp-rr"
+
+# List of monitors
+
+# NetPerf
+export NETPERF_BUFFER_SIZES=10
+export NETPERF_ITERATIONS=2
+export REMOTE_SERVER_USER=root
+export REMOTE_SERVER_HOST=""
+
+export MMTESTS_VMS_IP=""
+#export MMTESTS_HOST_IP=""
+export MMTESTS_AUTO_PACKAGE_INSTALL="yes"

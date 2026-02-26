@@ -1,0 +1,105 @@
+From 50e5340a62116e1d0f56d8e7124435725db54a6e Mon Sep 17 00:00:00 2001
+From: Chen Yu <yu.c.chen@intel.com>
+Date: Wed, 19 Feb 2025 09:33:20 +0200
+Subject: [PATCH 2/2] hack interleave allocate
+
+Signed-off-by: Chen Yu <yu.c.chen@intel.com>
+---
+ .../src/autonumabench/autonumabench-install   | 81 +++++++++++++++++++
+ 1 file changed, 81 insertions(+)
+
+diff --git a/shellpack_src/src/autonumabench/autonumabench-install b/shellpack_src/src/autonumabench/autonumabench-install
+index 06611279..9d5dfc93 100755
+--- a/shellpack_src/src/autonumabench/autonumabench-install
++++ b/shellpack_src/src/autonumabench/autonumabench-install
+@@ -113,6 +113,87 @@ index 41c7e60..d6bc498 100644
+  	ncpus = "#define NCPUS "cpus
+  	nnodes = "#define NNODES "(nodes)
+  	if (file == "numa01.c")
++diff --git a/numa01.c b/numa01.c
++index 98c2bec..6340e40 100644
++--- a/numa01.c
+++++ b/numa01.c
++@@ -17,6 +17,7 @@
++ #include <time.h>
++ #include <sys/wait.h>
++ #include <sys/file.h>
+++#include <sys/mman.h>
++ 
++ THREADS_VAL
++ NDMASK1
++@@ -32,9 +33,24 @@ NDMASK2
++ //#define INVERSE_BIND
++ //#define NO_BIND_FORCE_SAME_NODE
++ 
+++#define MPOL_F_NUMA_BALANCING   (1 << 13)
+++#define MPOL_INTERLEAVE 3
+++#define PAGE_SIZE 4096
+++#define SEC_SIZE 8192
+++
++ static char *p_global;
++ static unsigned long nodemask_global;
++ 
+++static void access_jump(char *start, char *end)
+++{
+++	char *tmp = start;
+++	while (tmp + PAGE_SIZE <= end) {
+++		bzero(tmp, PAGE_SIZE);
+++		asm volatile("" : : : "memory");
+++		tmp += SEC_SIZE;
+++	}
+++}
+++
++ void *thread(void * arg)
++ {
++ 	char *p = arg;
++@@ -45,18 +61,17 @@ void *thread(void * arg)
++ 	int nr = 1000;
++ #endif
++ #ifdef NO_BIND_FORCE_SAME_NODE
++-	if (set_mempolicy(MPOL_BIND, &nodemask_global, 3) < 0)
+++	if (set_mempolicy(MPOL_INTERLEAVE | MPOL_F_NUMA_BALANCING, &nodemask_global, 4) < 0)
++ 		perror("set_mempolicy"), printf("%lu\n", nodemask_global),
++ 			exit(1);
++ #endif
++ 	bzero(p_global, SIZE);
++ #ifdef NO_BIND_FORCE_SAME_NODE
++-	if (set_mempolicy(MPOL_DEFAULT, NULL, 3) < 0)
+++	if (0 && set_mempolicy(MPOL_DEFAULT, NULL, 3) < 0)
++ 		perror("set_mempolicy"), exit(1);
++ #endif
++ 	for (i = 0; i < nr; i++) {
++-		bzero(p, THREAD_SIZE);
++-		asm volatile("" : : : "memory");
+++		access_jump(p, p+THREAD_SIZE);
++ 	}
++ 	return NULL;
++ }
++@@ -71,7 +86,7 @@ int main()
++ 	int f;
++ 	unsigned long nodemask;
++ 
++-	nodemask_global = (time(NULL) & 1) + 1;
+++	nodemask_global = 3;
++ 	f = creat("lock", 0400);
++ 	if (f < 0)
++ 		perror("creat"), exit(1);
++@@ -81,9 +96,9 @@ int main()
++ 	if ((pid = fork()) < 0)
++ 		perror("fork"), exit(1);
++ 
++-	p_global = p = malloc(SIZE);
++-	if (!p)
++-		perror("malloc"), exit(1);
+++	p_global = p = mmap(NULL, SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+++	if (p == MAP_FAILED)
+++		perror("mmap"), exit(1);
++ 	CPU_ZERO(&cpumask);
++ 	if (!pid) {
++ 		FIRST_HALF
+ 			' | patch -p1 || die Failed to patch autonumabench
+ 
+ echo autonumabench installed successfully
+-- 
+2.48.1
+

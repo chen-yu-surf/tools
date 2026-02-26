@@ -1,0 +1,221 @@
+diff --git a/src/netperf.c b/src/netperf.c
+index 99b98b0..13adc55 100644
+--- a/src/netperf.c
++++ b/src/netperf.c
+@@ -23,6 +23,10 @@
+ 
+ 
+ */
++
++extern int set_task_slice(int pid, unsigned long slice);
++extern unsigned long slice;
++
+ char	netperf_id[]="\
+ @(#)netperf.c (c) Copyright 1993-2012 Hewlett-Packard Company, 2021 Hewlett Packard Enterprise Development LP. Version 2.6.0";
+ 
+@@ -118,6 +122,12 @@ main(int argc, char *argv[])
+     fflush(stdout);
+   }
+ 
++  if (slice) {
++    if (set_task_slice(0, slice)) {
++      printf("set slice %ld failed\n", slice);
++      return -1;
++    }
++  }
+ 
+   if (!no_control) {
+     establish_control(host_name,test_port,address_family,
+diff --git a/src/netserver.c b/src/netserver.c
+index 2e6b567..21bfacc 100644
+--- a/src/netserver.c
++++ b/src/netserver.c
+@@ -975,6 +975,8 @@ process_requests()
+   }
+ }
+ 
++unsigned long server_slice = 0;
++extern int set_task_slice(int pid, unsigned long slice);
+ /* the routine we call when we are going to spawn/fork/whatnot a child
+    process from the parent netserver daemon. raj 2011-07-08 */
+ void
+@@ -1016,6 +1018,12 @@ spawn_child() {
+     close_listens(listen_list);
+     open_debug_file();
+ 
++    if (server_slice) {
++      if (set_task_slice(0, server_slice)) {
++        printf("server set slice %ld failed\n", server_slice);
++        exit(-1);
++      }
++    }
+     child = 1;
+     netperf_daemon = 0;
+     process_requests();
+@@ -1251,10 +1259,12 @@ accept_connections() {
+   }
+ }
+ 
++
++
+ #ifndef WIN32
+-#define SERVER_ARGS "DdfhL:n:Np:v:VZ:46"
++#define SERVER_ARGS "Dde:fhL:n:Np:v:VZ:46"
+ #else
+-#define SERVER_ARGS "DdfhL:n:Np:v:VZ:46I:i:"
++#define SERVER_ARGS "Dde:fhL:n:Np:v:VZ:46I:i:"
+ #endif
+ void
+ scan_netserver_args(int argc, char *argv[]) {
+@@ -1284,6 +1294,9 @@ scan_netserver_args(int argc, char *argv[]) {
+       want_daemonize = 0;
+       not_inetd = 1;
+       break;
++    case 'e':
++      server_slice = atol(optarg);
++      break;
+     case 'f':
+       spawn_on_accept = 0;
+       not_inetd = 1;
+diff --git a/src/netsh.c b/src/netsh.c
+index 4525854..dda2b39 100644
+--- a/src/netsh.c
++++ b/src/netsh.c
+@@ -43,6 +43,90 @@ char	netsh_id[]="\
+ #include <sys/types.h>
+ #include <fcntl.h>
+ 
++#include <unistd.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <time.h>
++#include <linux/unistd.h>
++#include <linux/kernel.h>
++#include <linux/types.h>
++#include <sys/syscall.h>
++#include <pthread.h>
++
++#define gettid() syscall(__NR_gettid)
++
++#define SCHED_DEADLINE    6
++
++/* XXX use the proper syscall numbers */
++#ifdef __x86_64__
++#define __NR_sched_setattr        314
++#define __NR_sched_getattr        315
++#endif
++
++struct sched_attr {
++	__u32 size;
++	__u32 sched_policy;
++	__u64 sched_flags;
++
++	/* SCHED_NORMAL, SCHED_BATCH */
++	__s32 sched_nice;
++
++	/* SCHED_FIFO, SCHED_RR */
++	__u32 sched_priority;
++
++	/* SCHED_DEADLINE (nsec) */
++	__u64 sched_runtime;
++	__u64 sched_deadline;
++	__u64 sched_period;
++};
++
++int sched_getattr(pid_t pid,
++		  struct sched_attr *attr,
++		  unsigned int size,
++		  unsigned int flags)
++{
++	return syscall(__NR_sched_getattr, pid, attr, size, flags);
++}
++
++int sched_setattr(pid_t pid,
++		  struct sched_attr *attr,
++		  unsigned int flags)
++{
++	return syscall(__NR_sched_setattr, pid, attr, flags);
++}
++
++int set_task_slice(int pid, unsigned long slice)
++{
++	struct sched_attr attr;
++	unsigned int flags = 0;
++	int ret;
++
++	ret = sched_getattr(pid, &attr, sizeof(attr), flags);
++	if (ret < 0) {
++		perror("sched_getattr");
++		return -1;
++	}
++
++	attr.sched_runtime = slice;
++	ret = sched_setattr(pid, &attr, flags);
++	if (ret < 0) {
++		perror("sched_setattr");
++		return -1;
++	}
++	
++	printf("main thread pid=%d\n", pid);
++	printf("main thread policy=%d\n", attr.sched_policy);
++	printf("main thread nice=%d\n", attr.sched_nice);
++	printf("main thread priority=%d\n", attr.sched_priority);
++	printf("main thread runtime=%lld\n", attr.sched_runtime);
++	printf("main thread deadline=%lld\n", attr.sched_deadline);
++	printf("main thread period=%lld\n", attr.sched_period);
++
++
++	return 0;
++}
++
+ #ifndef WIN32
+ #include <unistd.h>
+ #include <errno.h>
+@@ -110,7 +194,7 @@ extern	int	getopt(int , char **, char *) ;
+    getopt to parse the command line, we will tell getopt that they do
+    not take parms, and then look for them ourselves */
+ 
+-#define GLOBAL_CMD_LINE_ARGS "A:a:b:B:CcdD:f:F:H:hi:I:jk:K:l:L:n:NO:o:P:p:rSs:t:T:v:VW:w:y:Y:Z:46"
++#define GLOBAL_CMD_LINE_ARGS "A:a:b:B:CcdD:e:f:F:H:hi:I:jk:K:l:L:n:NO:o:P:p:rSs:t:T:v:VW:w:y:Y:Z:46"
+ 
+ /************************************************************************/
+ /*									*/
+@@ -245,6 +329,8 @@ int no_control = 0;
+ /* what is the passphrase? */
+ char *passphrase = NULL;
+ 
++unsigned long slice = 0;
++
+ char netserver_usage[] = "\n\
+ Usage: netserver [options] \n\
+ \n\
+@@ -252,6 +338,7 @@ Options:\n\
+     -h                Display this text\n\
+     -D                Do not daemonize\n\
+     -d                Increase debugging output\n\
++    -e slice          Customize time slice\n\
+     -f                Do not spawn chilren for each test, run serially\n\
+     -L name,family    Use name to pick listen address and family for family\n\
+     -N                No debugging output, even if netperf asks\n\
+@@ -281,6 +368,7 @@ Global options:\n\
+                       using units as the initial guess for units per second\n\
+                       A negative value for time will make heavy use of the\n\
+                       system's timestamping functionality\n\
++    -e slice          Customize time slice\n\
+     -f G|M|K|g|m|k    Set the output units\n\
+     -F lfill[,rfill]* Pre-fill buffers with data from specified file\n\
+     -h                Display this text\n\
+@@ -713,6 +801,9 @@ scan_cmd_line(int argc, char *argv[])
+ 	     "--enable-demo=yes and recompiling\n");
+ #endif
+       break;
++    case 'e':
++      slice = atol(optarg);
++      break;
+     case 'f':
+       /* set the thruput formatting */
+       libfmt = *optarg;
+-- 
+2.25.1
+
