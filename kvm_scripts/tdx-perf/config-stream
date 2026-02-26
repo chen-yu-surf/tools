@@ -1,0 +1,15 @@
+export MMTESTS="stream"
+
+. $SHELLPACK_INCLUDE/include-sizes.sh
+get_numa_details
+
+# List of monitors
+
+# stream
+export STREAM_SIZE=
+export STREAM_THREADS=$NUMLLCS
+export STREAM_METHOD=omp
+export STREAM_ITERATIONS=5
+export STREAM_BUILD_FLAGS="-lm -Ofast"
+
+export MMTESTS_VMS_IP=""

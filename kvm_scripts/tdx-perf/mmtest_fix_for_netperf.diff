@@ -1,0 +1,25 @@
+diff --git a/shellpack_src/src/netperf/netperf-bench b/shellpack_src/src/netperf/netperf-bench
+index c3d074f7..4149d514 100755
+--- a/shellpack_src/src/netperf/netperf-bench
++++ b/shellpack_src/src/netperf/netperf-bench
+@@ -6,7 +6,7 @@ TASKSET_SERVER=
+ TASKSET_CLIENT=
+ 
+ ITERATIONS=5
+-NR_PAIRS=1
++NR_PAIRS=1
+ ###SHELLPACK parseargBegin
+ ###SHELLPACK parseargInstall
+ ###SHELLPACK parseargBindings
+@@ -105,7 +105,7 @@ mmtests_server_ctl start --serverside-name $PROTOCOL-$SIZE
+ 		$NET_PROTOCOL_OPT \
+ 		-t $PROTOCOL \
+ 		-i 3,3 -I 95,5 \
+-		-H $SERVER_HOST \
++		-H $SERVER_HOST -l $DURATION \
+ 		-- $SOCKETSIZE_OPT $MSGSIZE_OPT"
+ 	echo $TASKSET_CLIENT "netperf" $NETPERF_OPTS
+ 
+-- 
+2.25.1
+

@@ -1,0 +1,158 @@
+diff --git a/tools/testing/selftests/kvm/Makefile b/tools/testing/selftests/kvm/Makefile
+index 427946f20235..5cbc71302615 100644
+--- a/tools/testing/selftests/kvm/Makefile
++++ b/tools/testing/selftests/kvm/Makefile
+@@ -71,91 +71,9 @@ LIBKVM_riscv += lib/riscv/processor.c
+ LIBKVM_riscv += lib/riscv/ucall.c
+ 
+ # Non-compiled test targets
+-TEST_PROGS_x86_64 += x86_64/nx_huge_pages_test.sh
+ 
+ # Compiled test targets
+-TEST_GEN_PROGS_x86_64 = x86_64/cpuid_test
+-TEST_GEN_PROGS_x86_64 += x86_64/cr4_cpuid_sync_test
+-TEST_GEN_PROGS_x86_64 += x86_64/dirty_log_page_splitting_test
+-TEST_GEN_PROGS_x86_64 += x86_64/get_msr_index_features
+-TEST_GEN_PROGS_x86_64 += x86_64/exit_on_emulation_failure_test
+-TEST_GEN_PROGS_x86_64 += x86_64/fix_hypercall_test
+-TEST_GEN_PROGS_x86_64 += x86_64/hwcr_msr_test
+-TEST_GEN_PROGS_x86_64 += x86_64/hyperv_clock
+-TEST_GEN_PROGS_x86_64 += x86_64/hyperv_cpuid
+-TEST_GEN_PROGS_x86_64 += x86_64/hyperv_evmcs
+-TEST_GEN_PROGS_x86_64 += x86_64/hyperv_extended_hypercalls
+-TEST_GEN_PROGS_x86_64 += x86_64/hyperv_features
+-TEST_GEN_PROGS_x86_64 += x86_64/hyperv_ipi
+-TEST_GEN_PROGS_x86_64 += x86_64/hyperv_svm_test
+-TEST_GEN_PROGS_x86_64 += x86_64/hyperv_tlb_flush
+-TEST_GEN_PROGS_x86_64 += x86_64/kvm_clock_test
+-TEST_GEN_PROGS_x86_64 += x86_64/kvm_pv_test
+-TEST_GEN_PROGS_x86_64 += x86_64/mmio_warning_test
+-TEST_GEN_PROGS_x86_64 += x86_64/monitor_mwait_test
+-TEST_GEN_PROGS_x86_64 += x86_64/nested_exceptions_test
+-TEST_GEN_PROGS_x86_64 += x86_64/platform_info_test
+-TEST_GEN_PROGS_x86_64 += x86_64/pmu_event_filter_test
+-TEST_GEN_PROGS_x86_64 += x86_64/private_mem_conversions_test
+-TEST_GEN_PROGS_x86_64 += x86_64/private_mem_kvm_exits_test
+-TEST_GEN_PROGS_x86_64 += x86_64/set_boot_cpu_id
+-TEST_GEN_PROGS_x86_64 += x86_64/set_sregs_test
+-TEST_GEN_PROGS_x86_64 += x86_64/smaller_maxphyaddr_emulation_test
+-TEST_GEN_PROGS_x86_64 += x86_64/smm_test
+-TEST_GEN_PROGS_x86_64 += x86_64/state_test
+-TEST_GEN_PROGS_x86_64 += x86_64/vmx_preemption_timer_test
+-TEST_GEN_PROGS_x86_64 += x86_64/svm_vmcall_test
+-TEST_GEN_PROGS_x86_64 += x86_64/svm_int_ctl_test
+-TEST_GEN_PROGS_x86_64 += x86_64/svm_nested_shutdown_test
+-TEST_GEN_PROGS_x86_64 += x86_64/svm_nested_soft_inject_test
+-TEST_GEN_PROGS_x86_64 += x86_64/tsc_scaling_sync
+-TEST_GEN_PROGS_x86_64 += x86_64/sync_regs_test
+-TEST_GEN_PROGS_x86_64 += x86_64/ucna_injection_test
+-TEST_GEN_PROGS_x86_64 += x86_64/userspace_io_test
+-TEST_GEN_PROGS_x86_64 += x86_64/userspace_msr_exit_test
+-TEST_GEN_PROGS_x86_64 += x86_64/vmx_apic_access_test
+-TEST_GEN_PROGS_x86_64 += x86_64/vmx_close_while_nested_test
+-TEST_GEN_PROGS_x86_64 += x86_64/vmx_dirty_log_test
+-TEST_GEN_PROGS_x86_64 += x86_64/vmx_exception_with_invalid_guest_state
+-TEST_GEN_PROGS_x86_64 += x86_64/vmx_msrs_test
+-TEST_GEN_PROGS_x86_64 += x86_64/vmx_invalid_nested_guest_state
+-TEST_GEN_PROGS_x86_64 += x86_64/vmx_set_nested_state_test
+-TEST_GEN_PROGS_x86_64 += x86_64/vmx_tsc_adjust_test
+-TEST_GEN_PROGS_x86_64 += x86_64/vmx_nested_tsc_scaling_test
+-TEST_GEN_PROGS_x86_64 += x86_64/xapic_ipi_test
+-TEST_GEN_PROGS_x86_64 += x86_64/xapic_state_test
+-TEST_GEN_PROGS_x86_64 += x86_64/xcr0_cpuid_test
+-TEST_GEN_PROGS_x86_64 += x86_64/xss_msr_test
+-TEST_GEN_PROGS_x86_64 += x86_64/debug_regs
+-TEST_GEN_PROGS_x86_64 += x86_64/tsc_msrs_test
+-TEST_GEN_PROGS_x86_64 += x86_64/vmx_pmu_caps_test
+-TEST_GEN_PROGS_x86_64 += x86_64/xen_shinfo_test
+-TEST_GEN_PROGS_x86_64 += x86_64/xen_vmcall_test
+-TEST_GEN_PROGS_x86_64 += x86_64/sev_migrate_tests
+-TEST_GEN_PROGS_x86_64 += x86_64/amx_test
+-TEST_GEN_PROGS_x86_64 += x86_64/max_vcpuid_cap_test
+-TEST_GEN_PROGS_x86_64 += x86_64/triple_fault_event_test
+-TEST_GEN_PROGS_x86_64 += x86_64/recalc_apic_map_test
+-TEST_GEN_PROGS_x86_64 += access_tracking_perf_test
+-TEST_GEN_PROGS_x86_64 += demand_paging_test
+-TEST_GEN_PROGS_x86_64 += dirty_log_test
+-TEST_GEN_PROGS_x86_64 += dirty_log_perf_test
+-TEST_GEN_PROGS_x86_64 += guest_memfd_test
+-TEST_GEN_PROGS_x86_64 += guest_print_test
+-TEST_GEN_PROGS_x86_64 += hardware_disable_test
+-TEST_GEN_PROGS_x86_64 += kvm_create_max_vcpus
+-TEST_GEN_PROGS_x86_64 += kvm_page_table_test
+-TEST_GEN_PROGS_x86_64 += max_guest_memory_test
+-TEST_GEN_PROGS_x86_64 += memslot_modification_stress_test
+-TEST_GEN_PROGS_x86_64 += memslot_perf_test
+-TEST_GEN_PROGS_x86_64 += rseq_test
+-TEST_GEN_PROGS_x86_64 += set_memory_region_test
+-TEST_GEN_PROGS_x86_64 += steal_time
+-TEST_GEN_PROGS_x86_64 += kvm_binary_stats_test
+-TEST_GEN_PROGS_x86_64 += system_counter_offset_test
+-TEST_GEN_PROGS_x86_64 += x86_64/tdx_vm_tests
+-TEST_GEN_PROGS_x86_64 += x86_64/tdx_shared_mem_test
+-TEST_GEN_PROGS_x86_64 += x86_64/tdx_upm_test
++TEST_GEN_PROGS_x86_64 = x86_64/tdx_vm_tests
+ 
+ # Compiled outputs used by test targets
+ TEST_GEN_PROGS_EXTENDED_x86_64 += x86_64/nx_huge_pages_test
+diff --git a/tools/testing/selftests/kvm/lib/x86_64/tdx/tdx_util.c b/tools/testing/selftests/kvm/lib/x86_64/tdx/tdx_util.c
+index c9943f74cbef..6e87b02e0416 100644
+--- a/tools/testing/selftests/kvm/lib/x86_64/tdx/tdx_util.c
++++ b/tools/testing/selftests/kvm/lib/x86_64/tdx/tdx_util.c
+@@ -402,7 +402,7 @@ static void load_td_memory_region(struct kvm_vm *vm,
+ 		return;
+ 
+ 
+-	if (region->region.gmem_fd != -1)
++	if (region->region.guest_memfd != -1)
+ 		register_encrypted_memory_region(vm, region);
+ 
+ 	sparsebit_for_each_set_range(pages, i, j) {
+@@ -418,7 +418,7 @@ static void load_td_memory_region(struct kvm_vm *vm,
+ 		 * hence we have to make a copy if there's only one backing
+ 		 * memory source
+ 		 */
+-		if (region->region.gmem_fd == -1) {
++		if (region->region.guest_memfd == -1) {
+ 			source_addr = mmap(NULL, size_to_load, PROT_READ | PROT_WRITE,
+ 					MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+ 			TEST_ASSERT(
+@@ -431,7 +431,7 @@ static void load_td_memory_region(struct kvm_vm *vm,
+ 
+ 		tdx_init_mem_region(vm, source_addr, gpa, size_to_load);
+ 
+-		if (region->region.gmem_fd == -1)
++		if (region->region.guest_memfd == -1)
+ 			munmap(source_addr, size_to_load);
+ 	}
+ }
+diff --git a/tools/testing/selftests/kvm/settings b/tools/testing/selftests/kvm/settings
+index 6091b45d226b..79b65bdf05db 100644
+--- a/tools/testing/selftests/kvm/settings
++++ b/tools/testing/selftests/kvm/settings
+@@ -1 +1 @@
+-timeout=120
++timeout=1200
+diff --git a/tools/testing/selftests/kvm/x86_64/tdx_vm_tests.c b/tools/testing/selftests/kvm/x86_64/tdx_vm_tests.c
+index b3d592f007bf..5e721ccace58 100644
+--- a/tools/testing/selftests/kvm/x86_64/tdx_vm_tests.c
++++ b/tools/testing/selftests/kvm/x86_64/tdx_vm_tests.c
+@@ -1333,6 +1333,7 @@ int main(int argc, char **argv)
+ 		exit(KSFT_SKIP);
+ 	}
+ 
++	/*
+ 	run_in_new_process(&verify_td_lifecycle);
+ 	run_in_new_process(&verify_report_fatal_error);
+ 	run_in_new_process(&verify_td_ioexit);
+@@ -1348,6 +1349,7 @@ int main(int argc, char **argv)
+ 	run_in_new_process(&verify_td_cpuid_tdcall);
+ 	run_in_new_process(&verify_host_reading_private_mem);
+ 	run_in_new_process(&verify_tdcall_vp_info);
++	*/
+ 	run_in_new_process(&verify_large_td);
+ 
+ 	return 0;
+-- 
+2.25.1
+

@@ -1,0 +1,278 @@
+From 2a9590974191b18a64f00e0b5d649f60bd2dd60d Mon Sep 17 00:00:00 2001
+From: Chen Yu <yu.c.chen@intel.com>
+Date: Wed, 1 Oct 2025 14:31:12 +0800
+Subject: [PATCH] Add mmtest netperf stream hackbench script patch
+
+Signed-off-by: Chen Yu <yu.c.chen@intel.com>
+---
+ config-hackbench                            | 39 +++++++++++++++++++
+ config-netperf                              | 18 +++++++++
+ config-netperf-mmtests                      | 19 ++++++++++
+ config-schbench                             | 29 ++++++++++++++
+ config-stream                               | 20 ++++++++++
+ env.sh                                      |  2 +
+ launch.sh                                   | 42 +++++++++++++++++++++
+ shellpack_src/src/schbench/schbench-install |  2 +-
+ shellpack_src/src/stream/stream-bench       |  2 +-
+ shellpack_src/src/stream/stream-install     |  3 +-
+ 10 files changed, 173 insertions(+), 3 deletions(-)
+ create mode 100644 config-hackbench
+ create mode 100644 config-netperf
+ create mode 100644 config-netperf-mmtests
+ create mode 100644 config-schbench
+ create mode 100644 config-stream
+ create mode 100755 env.sh
+ create mode 100755 launch.sh
+
+diff --git a/config-hackbench b/config-hackbench
+new file mode 100644
+index 00000000..927985ac
+--- /dev/null
++++ b/config-hackbench
+@@ -0,0 +1,39 @@
++### hackbench a general scheduler benchmark and stress test that is
++### sensitive to regressions in the scheduler fast-path. It creates groups
++### of threads or processes (depending on configuration) that communicate
++### via pipes or sockets (depending on configuration).
++###
++### Note that while hackbench is often considered to be a scheduler benchmark,
++### it is particularly weak when used with pipes. Given multiple senders and
++### receivers sharing pipes that are unsynchronised, it is dominated heavily
++### by a mutex protecting the pipe structures and a spinlock protecting the
++### queue for wakeups. A significant percentage of time is spend acquiring
++### and releasing those locks as well as the inevitable bounces of cache
++### line data as waker/wakee processes do not run on the same CPUs but
++### instead select CPUs that are nearby during wakeups.
++#export MMTESTS="hackbench-process-pipes hackbench-process-sockets hackbench-thread-pipes hackbench-thread-sockets"
++export MMTESTS="hackbench-thread-pipes"
++
++# List of monitors
++#export RUN_MONITOR=yes
++#export MONITORS_ALWAYS=
++#export MONITORS_GZIP="proc-vmstat perf-time-stat mpstat turbostat"
++#export MONITORS_WITH_LATENCY="vmstat"
++#export MONITOR_PERF_EVENTS=cpu-migrations,context-switches
++#export MONITOR_UPDATE_FREQUENCY=10
++
++# HackBench
++export HACKBENCH_ITERATIONS=5
++export HACKBENCH_MIN_GROUPS=1
++export HACKBENCH_MAX_GROUPS=16
++if [[ `uname -m` =~ i.86 ]]; then
++	export HACKBENCH_MAX_GROUPS=128
++fi
++if [ $HACKBENCH_MAX_GROUPS -gt 296 ]; then
++	export HACKBENCH_MAX_GROUPS=296
++fi
++export HACKBENCH_LOOPS=1000000
++export MMTESTS_THREAD_CUTOFF=
++
++# when run in container
++export CONTAINER_NO_PIDS_LIMIT=yes
+diff --git a/config-netperf b/config-netperf
+new file mode 100644
+index 00000000..beae7989
+--- /dev/null
++++ b/config-netperf
+@@ -0,0 +1,18 @@
++#export MMTESTS="netperf-ipv4-udp-rr netperf-ipv4-tcp-rr"
++export MMTESTS="netperf-ipv4-tcp-rr"
++
++# List of monitors
++#export RUN_MONITOR=yes
++#export MONITORS_ALWAYS=
++#export MONITORS_GZIP="proc-vmstat mpstat turbostat"
++#export MONITORS_WITH_LATENCY="vmstat"
++#export MONITOR_UPDATE_FREQUENCY=10
++
++# NetPerf
++export NETPERF_BUFFER_SIZES=1
++export NETPERF_ITERATIONS=3
++export NETPERF_CONFIDENCE_MIN=3
++export NETPERF_CONFIDENCE_MAX=3
++export NETPERF_CONFIDENCE_LEVEL=95,5
++
++export MMTESTS_IGNORE_MIRROR=yes
+diff --git a/config-netperf-mmtests b/config-netperf-mmtests
+new file mode 100644
+index 00000000..2d3a3790
+--- /dev/null
++++ b/config-netperf-mmtests
+@@ -0,0 +1,19 @@
++#export MMTESTS="netperf-ipv4-udp-rr netperf-ipv4-tcp-rr"
++export MMTESTS="netperf-ipv4-tcp-rr"
++
++# List of monitors
++#export RUN_MONITOR=yes
++#export MONITORS_ALWAYS=
++#export MONITORS_GZIP="proc-vmstat mpstat turbostat"
++#export MONITORS_WITH_LATENCY="vmstat"
++#export MONITOR_UPDATE_FREQUENCY=10
++
++# NetPerf
++export NETPERF_BUFFER_SIZES=1
++export NETPERF_ITERATIONS=3
++export NETPERF_CONFIDENCE_MIN=3
++export NETPERF_CONFIDENCE_MAX=3
++export NETPERF_CONFIDENCE_LEVEL=95,5
++export NETPERF_NR_PAIRS=
++
++export MMTESTS_IGNORE_MIRROR=yes
+diff --git a/config-schbench b/config-schbench
+new file mode 100644
+index 00000000..9d092597
+--- /dev/null
++++ b/config-schbench
+@@ -0,0 +1,29 @@
++### schbench is a latency measurement benchmark that uses a mix of worker and
++### messaging threads. The worker threads wait for messages to come in which
++### include a timestamp of when they were queued and records how long it took
++### to receive the message. The message threads send messages and sleep for
++### a small random amount of time in between. The benchmark reports quartiles
++### of wakeup times of the worker threads with a specific interest in the
++### worse-case outliers.
++###
++### In this configuration, the number of threads is bound by the size of a
++### NUMA node to minimise the chances that delays reported are due to
++### remote access latencies.
++###
++
++export MMTESTS="schbench"
++
++# List of monitors
++#export RUN_MONITOR=yes
++#export MONITORS_ALWAYS=
++#export MONITORS_GZIP="proc-vmstat mpstat turbostat"
++#export MONITORS_WITH_LATENCY="vmstat"
++#export MONITOR_PERF_EVENTS=cpu-migrations,context-switches
++#export MONITOR_UPDATE_FREQUENCY=10
++
++# schbench
++export SCHBENCH_RUNTIME=100
++export SCHBENCH_MESSAGE_THREADS=$NUMNODES
++export SCHBENCH_THREADS=$(((NUMCPUS/NUMNODES)-1))
++
++export MMTESTS_IGNORE_MIRROR=yes
+diff --git a/config-stream b/config-stream
+new file mode 100644
+index 00000000..05c73243
+--- /dev/null
++++ b/config-stream
+@@ -0,0 +1,20 @@
++export MMTESTS="stream"
++
++. $SHELLPACK_INCLUDE/include-sizes.sh
++get_numa_details
++
++# List of monitors
++#export RUN_MONITOR=yes
++#export MONITORS_ALWAYS=
++#export MONITORS_GZIP="proc-vmstat top"
++#export MONITORS_WITH_LATENCY="vmstat"
++#export MONITOR_UPDATE_FREQUENCY=10
++
++# stream
++#export STREAM_SIZE=$((128000000))
++export STREAM_SIZE=$((1048576*512))
++export STREAM_THREADS=$NUMLLCS
++export STREAM_METHOD=omp
++export STREAM_ITERATIONS=7
++export STREAM_BUILD_FLAGS="-lm -Ofast"
++export MMTESTS_IGNORE_MIRROR=yes
+diff --git a/env.sh b/env.sh
+new file mode 100755
+index 00000000..951083d4
+--- /dev/null
++++ b/env.sh
+@@ -0,0 +1,2 @@
++export http_proxy='http://child-prc.intel.com:913'
++export https_proxy='http://child-prc.intel.com:913'
+diff --git a/launch.sh b/launch.sh
+new file mode 100755
+index 00000000..16ea0280
+--- /dev/null
++++ b/launch.sh
+@@ -0,0 +1,42 @@
++#!/bin/bash
++
++min_job=$(($(nproc) / 4))
++pairlist="$min_job $(($min_job * 2)) $(($min_job * 3)) $(($min_job * 4)) $(($min_job * 5)) $(($min_job * 6)) $(($min_job * 7)) $(($min_job * 8))"
++
++pepc pstates config --governor performance
++pepc pstates config --turbo off
++pepc cstates config --disable C2
++echo 1 > /proc/sys/kernel/numa_balancing
++echo 0 > /proc/sys/kernel/sched_schedstats
++
++echo NO_SCHED_CACHE > /sys/kernel/debug/sched/features
++#./run-mmtests.sh --no-monitor --config config-hackbench baseline-hb
++#./run-mmtests.sh --no-monitor --config config-stream baseline-st
++#sleep 10
++#./run-mmtests.sh --no-monitor --config config-schbench baseline-sb
++#./run-mmtests.sh --no-monitor --config config-netperf baseline-np
++
++#netperf
++for pair in $pairlist; do
++        cp config-netperf-mmtests netperf-cfg
++        sed -i "s/NR_PAIRS=/NR_PAIRS=$pair/g" netperf-cfg
++        ./run-mmtests.sh --no-monitor --config netperf-cfg baseline-np-${pair}pairs
++	sleep 5;
++	sync;
++done
++
++sync
++sleep 10
++echo SCHED_CACHE > /sys/kernel/debug/sched/features
++#./run-mmtests.sh --no-monitor --config config-hackbench sc-hb
++#./run-mmtests.sh --no-monitor --config config-stream sc-st
++#sleep 10
++#./run-mmtests.sh --no-monitor --config config-schbench sc-sb
++#./run-mmtests.sh --no-monitor --config config-netperf sc-np
++for pair in $pairlist; do
++        cp config-netperf-mmtests netperf-cfg
++        sed -i "s/NR_PAIRS=/NR_PAIRS=$pair/g" netperf-cfg
++        ./run-mmtests.sh --no-monitor --config netperf-cfg sc-np-${pair}pairs
++	sleep 5;
++	sync;
++done
+diff --git a/shellpack_src/src/schbench/schbench-install b/shellpack_src/src/schbench/schbench-install
+index 6bf6d105..13f696d4 100644
+--- a/shellpack_src/src/schbench/schbench-install
++++ b/shellpack_src/src/schbench/schbench-install
+@@ -1,6 +1,6 @@
+ #!/bin/bash
+ ###SHELLPACK preamble schbench-install 48aed1dc08e5
+-GIT_LOCATION=git://git.kernel.org/pub/scm/linux/kernel/git/mason/schbench.git
++GIT_LOCATION=http://git.kernel.org/pub/scm/linux/kernel/git/mason/schbench.git
+ MIRROR_LOCATION="$WEBROOT/schbench/"
+ 
+ ###SHELLPACK parseargBegin
+diff --git a/shellpack_src/src/stream/stream-bench b/shellpack_src/src/stream/stream-bench
+index 033f88e2..2b10068f 100755
+--- a/shellpack_src/src/stream/stream-bench
++++ b/shellpack_src/src/stream/stream-bench
+@@ -53,7 +53,7 @@ single-bind)
+ 	;;
+ 
+ omp)
+-	gcc -DSTREAM_ARRAY_SIZE=$STREAM_ARRAY_ELEMENTS -fopenmp $STREAM_BUILD_FLAGS stream.c -o stream || die Failed to compile stream binary
++	gcc -DNTIMES=100  -DSTREAM_ARRAY_SIZE=$STREAM_ARRAY_ELEMENTS -fopenmp $STREAM_BUILD_FLAGS stream.c -o stream || die Failed to compile stream binary
+ 	export OMP_NUM_THREADS=$STREAM_THREADS
+ 	;;
+ esac
+diff --git a/shellpack_src/src/stream/stream-install b/shellpack_src/src/stream/stream-install
+index 2867d8b0..0db24c8d 100644
+--- a/shellpack_src/src/stream/stream-install
++++ b/shellpack_src/src/stream/stream-install
+@@ -1,6 +1,7 @@
+ #!/bin/bash
+ ###SHELLPACK preamble stream-install 0
+-WEB_LOCATION="https://www.cs.virginia.edu/stream/FTP/Code/mysecond.c"
++#WEB_LOCATION="https://www.cs.virginia.edu/stream/FTP/Code/mysecond.c"
++WEB_LOCATION="https://raw.githubusercontent.com/jeffhammond/STREAM/refs/heads/master/mysecond.c"
+ MIRROR_LOCATION="$WEBROOT/stream/mysecond.c"
+ 
+ ###SHELLPACK parseargBegin
+-- 
+2.34.1
+
