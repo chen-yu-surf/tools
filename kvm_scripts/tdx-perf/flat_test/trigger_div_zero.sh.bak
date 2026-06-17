@@ -1,0 +1,761 @@
+#!/bin/bash
+# trigger_div_zero.sh - Trigger divide-by-zero in propagate_entity_load_avg
+#
+# The crash path:
+#   do_idle → sched_ttwu_pending → ttwu_do_activate → enqueue_task_fair
+#   → enqueue_hierarchy → update_load_avg → propagate_entity_load_avg
+#   → update_tg_cfs_load → div_u64(load_sum, divider) where divider=0
+#
+# Root cause: cfs_rq->avg.period_contrib contains a corrupted value
+# (~0xFFFF4A7E) causing get_pelt_divider() to return 0 via u32 overflow.
+# This happens when se->cfs_rq points to freed+recycled memory (UAF).
+#
+# Also: __calc_prop_weight() divides by cfs_rq->load.weight which can be 0
+# when the parent group cfs_rq has all entities removed.
+#
+# Strategy to reproduce:
+#   1. Use deep hierarchies (32 levels) to maximize hierarchy walk length
+#   2. Leave MOST CPUs idle — the crash was on idle CPU 207 receiving
+#      a remote wakeup IPI (sched_ttwu_pending path)
+#   3. Pin wakeup-generating tasks to a FEW CPUs, force remote wakeups
+#      to idle CPUs via ttwu_queue_wakelist
+#   4. Rapidly create/destroy cgroups to recycle per-cpu cfs_rq slab objects
+#   5. Minimize sleeps — the race window is sub-microsecond
+#   6. Generate slab pressure to force reuse of freed cfs_rq memory
+
+set -e
+
+CGROOT="/sys/fs/cgroup"
+TEST_ROOT="$CGROOT/test_flat_div0"
+DEPTH=16
+DEEP_DEPTH=32       # extra-deep hierarchy for worst-case walk
+NUM_GROUPS=8        # parallel cgroup trees
+HACKBENCH_LOOPS=50  # loops per hackbench instance
+ITERATIONS=200      # how many create/destroy cycles
+ONLINE_CPUS=$(nproc)
+# Pin workloads to first few CPUs, leave most idle for remote wakeup IPIs
+WORKER_CPUS=4
+if [ "$ONLINE_CPUS" -gt 16 ]; then
+    WORKER_CPUS=8
+fi
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+ORIG_PRINTK_LEVEL=""
+
+enable_verbose_printk() {
+    echo -e "${GREEN}[*] Enabling verbose printk / dynamic debug...${NC}"
+
+    # Save current console loglevel and set to max (8 = KERN_DEBUG)
+    ORIG_PRINTK_LEVEL=$(cat /proc/sys/kernel/printk)
+    echo 8 > /proc/sys/kernel/printk
+
+    # Enable dynamic debug for the scheduler and cgroup paths involved in the race
+    if [ -e /sys/kernel/debug/dynamic_debug/control ]; then
+        # sched core: sched_release_group, sched_unregister_group, ttwu paths
+        echo 'file kernel/sched/core.c +pflmt'   > /sys/kernel/debug/dynamic_debug/control 2>/dev/null || true
+        # fair.c: enqueue_task_fair, propagate_entity_load_avg, remove_entity_load_avg
+        echo 'file kernel/sched/fair.c +pflmt'   > /sys/kernel/debug/dynamic_debug/control 2>/dev/null || true
+        # cgroup core: css_released, css_free lifecycle
+        echo 'file kernel/cgroup/cgroup.c +pflmt' > /sys/kernel/debug/dynamic_debug/control 2>/dev/null || true
+        echo -e "  ${YELLOW}Dynamic debug enabled for sched/core, sched/fair, cgroup${NC}"
+    else
+        echo -e "  ${YELLOW}dynamic_debug not available (CONFIG_DYNAMIC_DEBUG not set?)${NC}"
+    fi
+
+    # Also enable tracing markers if ftrace is available
+    if [ -e /sys/kernel/debug/tracing/trace_marker ]; then
+        echo 1 > /sys/kernel/debug/tracing/tracing_on 2>/dev/null || true
+        # Enable sched and cgroup events
+        echo 1 > /sys/kernel/debug/tracing/events/sched/sched_wakeup/enable 2>/dev/null || true
+        echo 1 > /sys/kernel/debug/tracing/events/sched/sched_migrate_task/enable 2>/dev/null || true
+        echo 1 > /sys/kernel/debug/tracing/events/cgroup/cgroup_rmdir/enable 2>/dev/null || true
+        echo 1 > /sys/kernel/debug/tracing/events/cgroup/cgroup_release/enable 2>/dev/null || true
+        echo 1 > /sys/kernel/debug/tracing/events/cgroup/cgroup_destroy_root/enable 2>/dev/null || true
+        echo -e "  ${YELLOW}Ftrace events enabled: sched_wakeup, sched_migrate_task, cgroup_rmdir, cgroup_release${NC}"
+    fi
+
+    echo -e "  ${YELLOW}Console loglevel set to 8 (was: ${ORIG_PRINTK_LEVEL})${NC}"
+}
+
+restore_verbose_printk() {
+    echo -e "${GREEN}[*] Restoring printk / dynamic debug settings...${NC}"
+
+    # Restore console loglevel
+    if [ -n "$ORIG_PRINTK_LEVEL" ]; then
+        echo "$ORIG_PRINTK_LEVEL" > /proc/sys/kernel/printk 2>/dev/null || true
+    fi
+
+    # Disable dynamic debug
+    if [ -e /sys/kernel/debug/dynamic_debug/control ]; then
+        echo 'file kernel/sched/core.c -pflmt'   > /sys/kernel/debug/dynamic_debug/control 2>/dev/null || true
+        echo 'file kernel/sched/fair.c -pflmt'   > /sys/kernel/debug/dynamic_debug/control 2>/dev/null || true
+        echo 'file kernel/cgroup/cgroup.c -pflmt' > /sys/kernel/debug/dynamic_debug/control 2>/dev/null || true
+    fi
+
+    # Disable ftrace events
+    if [ -e /sys/kernel/debug/tracing/trace_marker ]; then
+        echo 0 > /sys/kernel/debug/tracing/events/sched/sched_wakeup/enable 2>/dev/null || true
+        echo 0 > /sys/kernel/debug/tracing/events/sched/sched_migrate_task/enable 2>/dev/null || true
+        echo 0 > /sys/kernel/debug/tracing/events/cgroup/cgroup_rmdir/enable 2>/dev/null || true
+        echo 0 > /sys/kernel/debug/tracing/events/cgroup/cgroup_release/enable 2>/dev/null || true
+        echo 0 > /sys/kernel/debug/tracing/events/cgroup/cgroup_destroy_root/enable 2>/dev/null || true
+    fi
+}
+
+cleanup() {
+    echo -e "${YELLOW}[*] Cleaning up...${NC}"
+    restore_verbose_printk
+    # Kill any remaining workloads
+    pkill -9 -f "hackbench" 2>/dev/null || true
+    pkill -9 -f "stress-ng" 2>/dev/null || true
+    pkill -9 -f "sysbench" 2>/dev/null || true
+    sleep 1
+
+    # Move all tasks back to root before removing
+    if [ -d "$TEST_ROOT" ]; then
+        find "$TEST_ROOT" -name "cgroup.procs" -exec sh -c '
+            while read pid; do
+                echo $pid > '"$CGROOT"'/cgroup.procs 2>/dev/null || true
+            done < "$1"
+        ' _ {} \;
+        sleep 1
+        # Remove deepest first
+        find "$TEST_ROOT" -depth -type d -exec rmdir {} \; 2>/dev/null || true
+    fi
+}
+
+trap cleanup EXIT
+
+check_prerequisites() {
+    if [ "$(id -u)" -ne 0 ]; then
+        echo "ERROR: Must run as root"
+        exit 1
+    fi
+
+    if ! which hackbench >/dev/null 2>&1; then
+        echo "ERROR: hackbench not found. Install it (e.g., from rt-tests or linux-tools)"
+        exit 1
+    fi
+
+    # Check cgroup v2
+    if ! mount | grep -q "cgroup2 on $CGROOT"; then
+        echo "ERROR: cgroup v2 not mounted at $CGROOT"
+        exit 1
+    fi
+
+    # Enable cpu controller in root
+    echo "+cpu" > "$CGROOT/cgroup.subtree_control" 2>/dev/null || true
+}
+
+# Create a deeply nested cgroup hierarchy and return the leaf path
+create_deep_hierarchy() {
+    local base="$1"
+    local id="$2"
+    local path="$base/grp_${id}"
+
+    mkdir -p "$path"
+    echo "+cpu" > "$path/cgroup.subtree_control" 2>/dev/null || true
+
+    local current="$path"
+    for ((d=1; d<=DEPTH; d++)); do
+        current="$current/L${d}"
+        mkdir -p "$current"
+        if [ $d -lt $DEPTH ]; then
+            echo "+cpu" > "$current/cgroup.subtree_control" 2>/dev/null || true
+        fi
+    done
+    echo "$current"
+}
+
+# Rapidly create hierarchy, launch hackbench, then destroy cgroup mid-flight
+stress_one_group() {
+    local grp_id="$1"
+
+    for ((iter=0; iter<ITERATIONS; iter++)); do
+        # Create deep hierarchy
+        local leaf
+        leaf=$(create_deep_hierarchy "$TEST_ROOT" "${grp_id}_${iter}")
+
+        # Launch hackbench PINNED to worker CPUs — forces remote wakeups
+        # to idle CPUs via ttwu_queue_wakelist
+        taskset -c "0-$((WORKER_CPUS-1))" hackbench -p -l "$HACKBENCH_LOOPS" -g 4 &
+        local hb_pid=$!
+
+        # No sleep — proceed immediately to maximize race window
+
+        # Move hackbench process group into the leaf cgroup
+        for pid in $(pgrep -P $hb_pid 2>/dev/null); do
+            echo "$pid" > "$leaf/cgroup.procs" 2>/dev/null || true
+        done
+        echo "$hb_pid" > "$leaf/cgroup.procs" 2>/dev/null || true
+
+        # Now the critical part: while hackbench tasks are actively waking
+        # each other through pipes, destroy intermediate cgroup levels.
+        # This creates the race between:
+        #   - rmdir → cpu_cgroup_css_released → sched_release_group (list_del_rcu)
+        #   - task wakeup → enqueue_task_fair → enqueue_hierarchy → propagate_entity_load_avg
+        #
+        # First move tasks up a few levels to allow intermediate removal
+        local mid="$TEST_ROOT/grp_${grp_id}_${iter}"
+        for ((d=1; d<=DEPTH/2; d++)); do
+            mid="$mid/L${d}"
+        done
+
+        # Move all tasks to mid-level, then destroy deeper levels
+        for pid in $(cat "$leaf/cgroup.procs" 2>/dev/null); do
+            echo "$pid" > "$mid/cgroup.procs" 2>/dev/null || true
+        done
+
+        # Destroy leaf and intermediate levels from bottom up while tasks run
+        local destroy_from="$leaf"
+        for ((d=DEPTH; d>DEPTH/2; d--)); do
+            rmdir "$destroy_from" 2>/dev/null || true
+            destroy_from=$(dirname "$destroy_from")
+        done
+
+        # Immediately move tasks again to trigger more wakeups during teardown
+        for pid in $(cat "$mid/cgroup.procs" 2>/dev/null); do
+            echo "$pid" > "$TEST_ROOT/grp_${grp_id}_${iter}/cgroup.procs" 2>/dev/null || true
+        done
+
+        # Let hackbench finish or kill it
+        wait $hb_pid 2>/dev/null || true
+
+        # Cleanup this iteration's hierarchy
+        find "$TEST_ROOT/grp_${grp_id}_${iter}" -depth -type d -exec rmdir {} \; 2>/dev/null || true
+    done
+}
+
+# Alternative approach: rapid cgroup create/destroy while a long-running
+# hackbench is active - maximizes the window for the race
+stress_rapid_rmdir() {
+    echo -e "${GREEN}[*] Phase 2: Rapid cgroup create/move/destroy with active hackbench${NC}"
+
+    # Start long-running hackbench instances PINNED to worker CPUs
+    local hb_pids=()
+    for ((i=0; i<4; i++)); do
+        taskset -c "0-$((WORKER_CPUS-1))" hackbench -p -l 100000 -g 8 &
+        hb_pids+=($!)
+    done
+
+    sleep 0.5  # let them spawn
+
+    # Rapidly create deep cgroups, move tasks in, then destroy
+    for ((iter=0; iter<ITERATIONS*2; iter++)); do
+        local leaf
+        leaf=$(create_deep_hierarchy "$TEST_ROOT" "rapid_${iter}")
+
+        # Grab some hackbench child pids and move them deep
+        local moved=0
+        for pid in $(pgrep -f hackbench | shuf | head -20); do
+            if echo "$pid" > "$leaf/cgroup.procs" 2>/dev/null; then
+                moved=$((moved+1))
+            fi
+        done
+
+        # Immediately move them back to root test cgroup
+        for pid in $(cat "$leaf/cgroup.procs" 2>/dev/null); do
+            echo "$pid" > "$TEST_ROOT/cgroup.procs" 2>/dev/null || true
+        done
+
+        # Destroy the hierarchy while RCU callbacks may still reference it
+        find "$TEST_ROOT/grp_rapid_${iter}" -depth -type d -exec rmdir {} \; 2>/dev/null || true
+
+        # Every N iterations, show progress
+        if [ $((iter % 50)) -eq 0 ]; then
+            echo -e "  ${YELLOW}[iter $iter/$((ITERATIONS*2))] moved=$moved tasks${NC}"
+        fi
+    done
+
+    # Kill long-running hackbench
+    for pid in "${hb_pids[@]}"; do
+        kill -9 "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+    done
+}
+
+# Phase 3: stress-ng --sleep in deep cgroups, destroy while tasks are sleeping
+# Sleeping tasks get woken up and traverse the freed hierarchy via
+# try_to_wake_up → ttwu_do_activate → enqueue_task_fair → propagate_entity_load_avg
+stress_sleep_destroy() {
+    echo -e "${GREEN}[*] Phase 3: Sleep + destroy (wakeup through freed hierarchy)${NC}"
+
+    for ((iter=0; iter<ITERATIONS; iter++)); do
+        local leaf
+        leaf=$(create_deep_hierarchy "$TEST_ROOT" "sleep_${iter}")
+
+        # Start stress-ng --sleep: many short sleeps generate wakeups
+        if command -v stress-ng >/dev/null; then
+            stress-ng --sleep "$ONLINE_CPUS" --sleep-max 500 --timeout 2s \
+                >/dev/null 2>&1 &
+            local sg_pid=$!
+            sleep 0.1
+
+            # Move stress-ng workers into the deep cgroup
+            for pid in $(pgrep -P "$sg_pid" 2>/dev/null); do
+                echo "$pid" > "$leaf/cgroup.procs" 2>/dev/null || true
+            done
+
+            # Let them enter sleep states
+            sleep 0.3
+
+            # Yank tasks out to parent and immediately destroy the hierarchy
+            # Tasks waking up will traverse the now-freed se->parent chain
+            for pid in $(cat "$leaf/cgroup.procs" 2>/dev/null); do
+                echo "$pid" > "$TEST_ROOT/cgroup.procs" 2>/dev/null || true
+            done
+
+            # Destroy immediately - no waiting for RCU grace period to complete
+            find "$TEST_ROOT/grp_sleep_${iter}" -depth -type d -exec rmdir {} \; 2>/dev/null || true
+
+            kill "$sg_pid" 2>/dev/null; wait "$sg_pid" 2>/dev/null || true
+        fi
+
+        if [ $((iter % 50)) -eq 0 ]; then
+            echo -e "  ${YELLOW}[iter $iter/$ITERATIONS]${NC}"
+        fi
+    done
+}
+
+# Phase 4: Throttle-burst + destroy — throttling queues up pending wakeups,
+# unthrottle floods them all at once, then we destroy the cgroup.
+# The burst of wakeups racing with free maximizes the hit window.
+stress_throttle_destroy() {
+    echo -e "${GREEN}[*] Phase 4: Throttle-burst + destroy (queued wakeup flood)${NC}"
+
+    for ((iter=0; iter<ITERATIONS; iter++)); do
+        local leaf
+        leaf=$(create_deep_hierarchy "$TEST_ROOT" "thr_${iter}")
+
+        # hackbench in pipe mode — generates constant wakeups via pipe write
+        hackbench -p -l 200 -g 4 &
+        local hb_pid=$!
+        sleep 0.05
+
+        # Move into deep cgroup
+        for pid in $(pgrep -P $hb_pid 2>/dev/null); do
+            echo "$pid" > "$leaf/cgroup.procs" 2>/dev/null || true
+        done
+        echo "$hb_pid" > "$leaf/cgroup.procs" 2>/dev/null || true
+
+        # Throttle HARD — tasks pile up with pending wakeups
+        echo "1000 100000" > "$leaf/cpu.max" 2>/dev/null || true
+        sleep 0.05
+
+        # Yank tasks out while they're throttled (wakeups pending)
+        for pid in $(cat "$leaf/cgroup.procs" 2>/dev/null); do
+            echo "$pid" > "$TEST_ROOT/cgroup.procs" 2>/dev/null || true
+        done
+
+        # Unthrottle (not strictly needed after move, but helps flush)
+        echo "max 100000" > "$leaf/cpu.max" 2>/dev/null || true
+
+        # Destroy immediately — freed per-cpu cfs_rq while pending wakeups drain
+        find "$TEST_ROOT/grp_thr_${iter}" -depth -type d -exec rmdir {} \; 2>/dev/null || true
+
+        wait $hb_pid 2>/dev/null || true
+
+        if [ $((iter % 50)) -eq 0 ]; then
+            echo -e "  ${YELLOW}[iter $iter/$ITERATIONS]${NC}"
+        fi
+    done
+}
+
+# Phase 5: Deep (32-level) fork storm + destroy with CPU pinning
+# Fork creates enqueue_hierarchy storms; pinning concentrates remote wakeups
+# (sched_ttwu_pending) on specific CPUs where freed per-cpu memory is accessed.
+stress_deep_fork_destroy() {
+    echo -e "${GREEN}[*] Phase 5: Deep fork storm + affinity pin + destroy${NC}"
+
+    for ((iter=0; iter<ITERATIONS/2; iter++)); do
+        # Use extra-deep hierarchy (32 levels) — longer walk = wider race window
+        local base="$TEST_ROOT/grp_deep_${iter}"
+        mkdir -p "$base"
+        echo "+cpu" > "$base/cgroup.subtree_control" 2>/dev/null || true
+
+        local current="$base"
+        for ((d=1; d<=DEEP_DEPTH; d++)); do
+            current="$current/L${d}"
+            mkdir -p "$current"
+            if [ $d -lt $DEEP_DEPTH ]; then
+                echo "+cpu" > "$current/cgroup.subtree_control" 2>/dev/null || true
+            fi
+        done
+        local leaf="$current"
+
+        if command -v stress-ng >/dev/null; then
+            # Fork storm in the deepest cgroup
+            stress-ng --fork "$((ONLINE_CPUS/2 + 1))" --timeout 3s >/dev/null 2>&1 &
+            local fork_pid=$!
+            sleep 0.2
+
+            # Move into leaf
+            for pid in $(pgrep -P "$fork_pid" 2>/dev/null); do
+                echo "$pid" > "$leaf/cgroup.procs" 2>/dev/null || true
+            done
+
+            # Pin tasks to a few CPUs — concentrates ttwu_do_activate on those CPUs
+            local pin_cpu=$((iter % ONLINE_CPUS))
+            for pid in $(cat "$leaf/cgroup.procs" 2>/dev/null | head -10); do
+                taskset -pc "$pin_cpu" "$pid" >/dev/null 2>&1 || true
+            done
+
+            sleep 0.5
+
+            # Move tasks out and destroy
+            for pid in $(cat "$leaf/cgroup.procs" 2>/dev/null); do
+                echo "$pid" > "$TEST_ROOT/cgroup.procs" 2>/dev/null || true
+            done
+
+            find "$base" -depth -type d -exec rmdir {} \; 2>/dev/null || true
+
+            kill "$fork_pid" 2>/dev/null; wait "$fork_pid" 2>/dev/null || true
+        else
+            # Fallback: use hackbench if stress-ng not available
+            hackbench -p -l 100 -g 8 &
+            local hb_pid=$!
+            sleep 0.05
+
+            for pid in $(pgrep -P $hb_pid 2>/dev/null); do
+                echo "$pid" > "$leaf/cgroup.procs" 2>/dev/null || true
+            done
+
+            local pin_cpu=$((iter % ONLINE_CPUS))
+            for pid in $(cat "$leaf/cgroup.procs" 2>/dev/null | head -10); do
+                taskset -pc "$pin_cpu" "$pid" >/dev/null 2>&1 || true
+            done
+
+            sleep 0.3
+            for pid in $(cat "$leaf/cgroup.procs" 2>/dev/null); do
+                echo "$pid" > "$TEST_ROOT/cgroup.procs" 2>/dev/null || true
+            done
+            find "$base" -depth -type d -exec rmdir {} \; 2>/dev/null || true
+            wait $hb_pid 2>/dev/null || true
+        fi
+
+        if [ $((iter % 25)) -eq 0 ]; then
+            echo -e "  ${YELLOW}[iter $iter/$((ITERATIONS/2))]${NC}"
+        fi
+    done
+}
+
+# Phase 6: Weight churn + destroy — changing cpu.weight triggers
+# update_tg_cfs_load / propagate_entity_load_avg concurrently with free.
+# Combined with wakeups from hackbench this maximizes the divide-by-zero window.
+stress_weight_churn_destroy() {
+    echo -e "${GREEN}[*] Phase 6: Weight churn + concurrent destroy${NC}"
+
+    # Long-running hackbench as wakeup source
+    hackbench -p -l 100000 -g "$ONLINE_CPUS" &
+    local bg_hb=$!
+    sleep 0.5
+
+    for ((iter=0; iter<ITERATIONS; iter++)); do
+        local leaf
+        leaf=$(create_deep_hierarchy "$TEST_ROOT" "wt_${iter}")
+
+        # Move some hackbench tasks into the deep cgroup
+        for pid in $(pgrep -f hackbench | shuf | head -15); do
+            echo "$pid" > "$leaf/cgroup.procs" 2>/dev/null || true
+        done
+
+        # Rapidly churn cpu.weight on the leaf and its parents
+        # This triggers update_cfs_group → reweight_entity → propagate_entity_load_avg
+        local p="$leaf"
+        for ((w=0; w<5; w++)); do
+            [ -w "$p/cpu.weight" ] && echo $(( 1 + RANDOM % 10000 )) > "$p/cpu.weight" 2>/dev/null || true
+            p=$(dirname "$p")
+        done
+
+        # Move tasks back and destroy — weight-change RCU callbacks may still
+        # reference the per-cpu cfs_rq
+        for pid in $(cat "$leaf/cgroup.procs" 2>/dev/null); do
+            echo "$pid" > "$TEST_ROOT/cgroup.procs" 2>/dev/null || true
+        done
+
+        find "$TEST_ROOT/grp_wt_${iter}" -depth -type d -exec rmdir {} \; 2>/dev/null || true
+
+        if [ $((iter % 50)) -eq 0 ]; then
+            echo -e "  ${YELLOW}[iter $iter/$ITERATIONS]${NC}"
+        fi
+    done
+
+    kill -9 "$bg_hb" 2>/dev/null || true
+    wait "$bg_hb" 2>/dev/null || true
+}
+
+# Phase 7: RT class bounce during destroy — switching between CFS and RT
+# forces dequeue/enqueue through propagate_entity_load_avg at destroy time
+stress_rt_bounce_destroy() {
+    echo -e "${GREEN}[*] Phase 7: RT class bounce + destroy${NC}"
+
+    for ((iter=0; iter<ITERATIONS/2; iter++)); do
+        local leaf
+        leaf=$(create_deep_hierarchy "$TEST_ROOT" "rt_${iter}")
+
+        hackbench -p -l 100 -g 4 &
+        local hb_pid=$!
+        sleep 0.05
+
+        # Move into deep cgroup
+        for pid in $(pgrep -P $hb_pid 2>/dev/null); do
+            echo "$pid" > "$leaf/cgroup.procs" 2>/dev/null || true
+        done
+
+        # Rapidly flip tasks CFS->RT->CFS (causes dequeue_task_fair + enqueue
+        # through the hierarchy, exercising propagate_entity_load_avg)
+        for pid in $(cat "$leaf/cgroup.procs" 2>/dev/null | head -8); do
+            chrt -f -p 1 "$pid" 2>/dev/null || true
+            chrt -o -p 0 "$pid" 2>/dev/null || true
+        done
+
+        # Move out and destroy
+        for pid in $(cat "$leaf/cgroup.procs" 2>/dev/null); do
+            echo "$pid" > "$TEST_ROOT/cgroup.procs" 2>/dev/null || true
+        done
+        find "$TEST_ROOT/grp_rt_${iter}" -depth -type d -exec rmdir {} \; 2>/dev/null || true
+
+        wait $hb_pid 2>/dev/null || true
+
+        if [ $((iter % 50)) -eq 0 ]; then
+            echo -e "  ${YELLOW}[iter $iter/$((ITERATIONS/2))]${NC}"
+        fi
+    done
+}
+
+# Phase 0 (KEY): Target the exact crash path - remote wakeup IPI on idle CPUs.
+# The original crash was on CPU 207 (idle, swapper) receiving sched_ttwu_pending.
+# Strategy: pin task generators to a few CPUs, force remote wakeups to many
+# idle CPUs, while rapidly cycling cgroup hierarchies to trigger UAF on
+# per-cpu cfs_rq slab objects.
+stress_idle_cpu_wakeup_destroy() {
+    echo -e "${GREEN}[*] Phase 0: Idle CPU remote wakeup + rapid cgroup destroy${NC}"
+    echo -e "  ${YELLOW}Pinning workers to CPUs 0-$((WORKER_CPUS-1)), targeting idle CPUs${NC}"
+
+    # First: create many deep cgroup hierarchies to generate slab pressure
+    # This fills the per-cpu cfs_rq slab cache, making recycle more likely
+    local SLAB_PRESSURE_GROUPS=64
+    echo -e "  ${YELLOW}Creating $SLAB_PRESSURE_GROUPS cgroup hierarchies for slab pressure...${NC}"
+    for ((g=0; g<SLAB_PRESSURE_GROUPS; g++)); do
+        local base="$TEST_ROOT/slab_${g}"
+        mkdir -p "$base"
+        echo "+cpu" > "$base/cgroup.subtree_control" 2>/dev/null || true
+        local cur="$base"
+        for ((d=1; d<=DEPTH; d++)); do
+            cur="$cur/L${d}"
+            mkdir -p "$cur"
+            if [ $d -lt $DEPTH ]; then
+                echo "+cpu" > "$cur/cgroup.subtree_control" 2>/dev/null || true
+            fi
+        done
+    done
+    # Destroy them all to free the slab objects (fills the slab free lists)
+    find "$TEST_ROOT" -path "*/slab_*" -depth -type d -exec rmdir {} \; 2>/dev/null || true
+    echo -e "  ${YELLOW}Slab objects freed, free list primed${NC}"
+
+    # Now run the main race loop: create deep hierarchy, put tasks in,
+    # force remote wakeups, destroy, repeat.
+    for ((iter=0; iter<ITERATIONS*3; iter++)); do
+        local leaf
+        leaf=$(create_deep_hierarchy "$TEST_ROOT" "idle_${iter}")
+
+        # Launch hackbench PINNED to worker CPUs only.
+        # Pipe mode generates wakeups; some will be queued to idle CPUs
+        # via select_idle_sibling → ttwu_queue_wakelist → IPI to idle CPU
+        taskset -c "0-$((WORKER_CPUS-1))" hackbench -p -l 30 -g 2 &
+        local hb_pid=$!
+
+        # Tiny delay — just enough for children to spawn
+        : # no sleep at all — maximum pressure
+
+        # Move hackbench tasks into the deep cgroup
+        for pid in $(pgrep -P $hb_pid 2>/dev/null | head -20); do
+            echo "$pid" > "$leaf/cgroup.procs" 2>/dev/null || true
+        done
+        echo "$hb_pid" > "$leaf/cgroup.procs" 2>/dev/null || true
+
+        # Force some tasks to target idle CPUs (generates remote wakeup IPIs)
+        local target_cpu=$(( WORKER_CPUS + (iter % (ONLINE_CPUS - WORKER_CPUS)) ))
+        for pid in $(cat "$leaf/cgroup.procs" 2>/dev/null | head -5); do
+            taskset -pc "$target_cpu" "$pid" 2>/dev/null || true
+        done
+
+        # Immediately yank tasks out and destroy — the per-cpu cfs_rq memory
+        # should be recycled quickly because of the slab pressure above
+        for pid in $(cat "$leaf/cgroup.procs" 2>/dev/null); do
+            echo "$pid" > "$TEST_ROOT/cgroup.procs" 2>/dev/null || true
+        done
+        find "$TEST_ROOT/grp_idle_${iter}" -depth -type d -exec rmdir {} \; 2>/dev/null || true
+
+        # Don't wait for hackbench to finish — kill immediately to keep pressure up
+        kill -9 "$hb_pid" 2>/dev/null || true
+        wait "$hb_pid" 2>/dev/null || true
+
+        if [ $((iter % 100)) -eq 0 ]; then
+            echo -e "  ${YELLOW}[iter $iter/$((ITERATIONS*3))] target_cpu=$target_cpu${NC}"
+            # Check for crash
+            if dmesg | grep -qi "divide error\|oops"; then
+                echo -e "${RED}[!] HIT DETECTED at iter $iter!${NC}"
+                dmesg | tail -40
+                return
+            fi
+        fi
+    done
+    echo -e "${GREEN}[*] Phase 0 complete${NC}"
+}
+
+# Phase 8: Maximize slab recycling + remote wakeup storm.
+# The key insight: the div-by-zero requires se->cfs_rq to point to RECYCLED
+# memory (freed per-cpu cfs_rq whose slab slot was reused for another object).
+# KASAN passes because the new object is valid, but period_contrib is garbage.
+stress_slab_recycle_wakeup() {
+    echo -e "${GREEN}[*] Phase 8: Slab recycle + remote wakeup storm${NC}"
+
+    # Keep a background wakeup generator running (pinned to few CPUs)
+    taskset -c "0-$((WORKER_CPUS-1))" hackbench -p -l 500000 -g "$WORKER_CPUS" &
+    local bg_hb=$!
+
+    # Rapidly create and destroy MANY cgroup hierarchies
+    # Each create allocates per-cpu cfs_rq + se (one per CPU in the system)
+    # Each destroy eventually frees them → slab recycling
+    # The background hackbench generates constant wakeups that traverse hierarchies
+    for ((cycle=0; cycle<5; cycle++)); do
+        echo -e "  ${YELLOW}[cycle $cycle/5] Creating 128 hierarchies...${NC}"
+
+        # Create batch
+        local pids_in_groups=()
+        for ((g=0; g<128; g++)); do
+            local leaf
+            leaf=$(create_deep_hierarchy "$TEST_ROOT" "recycle_${cycle}_${g}")
+
+            # Move some hackbench tasks into the group briefly
+            for pid in $(pgrep -f hackbench 2>/dev/null | shuf | head -3); do
+                echo "$pid" > "$leaf/cgroup.procs" 2>/dev/null || true
+            done
+        done
+
+        # Immediately move all tasks out and destroy all groups
+        # This frees many per-cpu cfs_rq objects at once → high slab reuse pressure
+        for pid in $(find "$TEST_ROOT" -path "*/recycle_${cycle}_*" -name "cgroup.procs" \
+                     -exec cat {} \; 2>/dev/null | sort -u); do
+            echo "$pid" > "$TEST_ROOT/cgroup.procs" 2>/dev/null || true
+        done
+
+        find "$TEST_ROOT" -path "*/recycle_${cycle}_*" -depth -type d \
+            -exec rmdir {} \; 2>/dev/null || true
+
+        # Now immediately create NEW hierarchies — these will likely reuse
+        # the just-freed slab objects. If any stale se->cfs_rq pointers
+        # still exist in the wakeup path, they'll hit the recycled memory.
+        for ((g=0; g<64; g++)); do
+            local leaf
+            leaf=$(create_deep_hierarchy "$TEST_ROOT" "reuse_${cycle}_${g}")
+            # Move tasks in — their enqueue_hierarchy will propagate through
+            # group entities whose per-cpu cfs_rq might overlap with freed ones
+            for pid in $(pgrep -f hackbench 2>/dev/null | shuf | head -2); do
+                echo "$pid" > "$leaf/cgroup.procs" 2>/dev/null || true
+            done
+        done
+
+        # Force remote wakeups: move tasks to idle CPUs then back
+        for pid in $(pgrep -f hackbench 2>/dev/null | shuf | head -30); do
+            local idle_cpu=$(( WORKER_CPUS + (RANDOM % (ONLINE_CPUS - WORKER_CPUS)) ))
+            taskset -pc "$idle_cpu" "$pid" 2>/dev/null || true
+        done
+
+        # Destroy the reuse batch too
+        for pid in $(find "$TEST_ROOT" -path "*/reuse_${cycle}_*" -name "cgroup.procs" \
+                     -exec cat {} \; 2>/dev/null | sort -u); do
+            echo "$pid" > "$TEST_ROOT/cgroup.procs" 2>/dev/null || true
+        done
+        find "$TEST_ROOT" -path "*/reuse_${cycle}_*" -depth -type d \
+            -exec rmdir {} \; 2>/dev/null || true
+
+        # Check for crash
+        if dmesg | grep -qi "divide error\|oops"; then
+            echo -e "${RED}[!] HIT DETECTED in phase 8 cycle $cycle!${NC}"
+            dmesg | tail -40
+            kill -9 "$bg_hb" 2>/dev/null || true
+            wait "$bg_hb" 2>/dev/null || true
+            return
+        fi
+    done
+
+    kill -9 "$bg_hb" 2>/dev/null || true
+    wait "$bg_hb" 2>/dev/null || true
+    echo -e "${GREEN}[*] Phase 8 complete${NC}"
+}
+
+main() {
+    echo -e "${GREEN}=============================================${NC}"
+    echo -e "${GREEN} Flat Task Pickup - Divide-by-Zero Trigger   ${NC}"
+    echo -e "${GREEN} Flat Pick Divide-by-Zero Trigger             ${NC}"
+    echo -e "${GREEN} Target: idle CPU remote wakeup + cgroup free ${NC}"
+    echo -e "${GREEN}=============================================${NC}"
+    echo ""
+    echo "Config: DEPTH=$DEPTH, NUM_GROUPS=$NUM_GROUPS, ITERATIONS=$ITERATIONS"
+    echo "Worker CPUs: 0-$((WORKER_CPUS-1)), Idle CPUs: ${WORKER_CPUS}-$((ONLINE_CPUS-1))"
+    echo ""
+
+    check_prerequisites
+    cleanup 2>/dev/null || true
+
+    enable_verbose_printk
+
+    # Clear dmesg ring buffer so we only see messages from this test
+    dmesg -C 2>/dev/null || true
+    echo -e "  ${YELLOW}dmesg ring buffer cleared${NC}"
+
+    mkdir -p "$TEST_ROOT"
+    echo "+cpu" > "$TEST_ROOT/cgroup.subtree_control" 2>/dev/null || true
+
+    # Phase 0 (NEW): Remote wakeup on idle CPUs + rapid cgroup recycling
+    # This targets the exact crash path: sched_ttwu_pending on idle CPU
+    stress_idle_cpu_wakeup_destroy
+
+    echo -e "${GREEN}[*] Phase 1: Parallel deep cgroup stress (${NUM_GROUPS} groups x ${DEPTH} levels)${NC}"
+
+    # Launch parallel stress workers
+    for ((g=0; g<NUM_GROUPS; g++)); do
+        stress_one_group "$g" &
+    done
+
+    # Wait for phase 1
+    wait
+    echo -e "${GREEN}[*] Phase 1 complete${NC}"
+
+    # Phase 2: more aggressive approach
+    stress_rapid_rmdir
+
+    # Phase 3: sleep tasks + destroy (wakeup through freed hierarchy)
+    stress_sleep_destroy
+
+    # Phase 4: throttle-burst + destroy (queued wakeup flood)
+    stress_throttle_destroy
+
+    # Phase 5: deep 32-level fork storm + affinity + destroy
+    stress_deep_fork_destroy
+
+    # Phase 6: weight churn + destroy
+    stress_weight_churn_destroy
+
+    # Phase 7: RT class bounce + destroy
+    stress_rt_bounce_destroy
+
+    # Phase 8 (NEW): Slab recycling pressure + wakeup storm
+    stress_slab_recycle_wakeup
+
+    echo ""
+    echo -e "${GREEN}[*] Test complete. If no crash occurred, try increasing ITERATIONS.${NC}"
+    echo -e "${YELLOW}[*] Check dmesg for 'divide error' or KASAN reports.${NC}"
+    dmesg | tail -30 | grep -i -E "divide|oops|kasan|bug" && \
+        echo -e "${RED}[!] POSSIBLE HIT - check full dmesg${NC}" || \
+        echo -e "${GREEN}[*] No obvious crash in recent dmesg${NC}"
+}
+
+main "$@"

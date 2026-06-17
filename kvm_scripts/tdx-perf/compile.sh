@@ -1,14 +1,11 @@
 #!/bin/bash
-# Build kernel on gnr, deploy to VM, and boot into it.
+# Build kernel deb from local source tree, deploy to VM, and boot into it.
 #
 # Workflow:
-#   1. Copy VM's current kernel config to host
-#   2. SCP config to gnr:/home/chenyu/linux/.config
-#   3. Clean old debs on gnr, fix config, build kernel debs
-#   4. SCP debs (excluding libc and dbg) back to host
-#   5. Upload debs to VM
-#   6. Install debs on VM (sudo)
-#   7. Reboot VM (GRUB defaults to newest kernel)
+#   1. Build kernel debs from local linux source
+#   2. Upload debs to VM
+#   3. Install debs on VM
+#   4. Reboot VM (GRUB defaults to newest kernel)
 #
 # Note: If QEMU uses -no-reboot, the VM will shut down instead of
 # rebooting. Relaunch it with: ./setup_img_launch_vm.sh launch
@@ -18,64 +15,71 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-GUEST_HOST=vm
-GNR_HOST=gnr
-GNR_LINUX_DIR=/home/chenyu/linux
-GNR_DEB_DIR=/home/chenyu
+GUEST_IP=localhost
+SSH_PORT=2222
+ROOT_PASSWORD=123456
+LINUX_DIR="${SCRIPT_DIR}/linux"
 LOCAL_DEB_DIR="${SCRIPT_DIR}/debs"
+NJOBS=$(nproc)
+KERNEL_VERSION="7.1.0"
+SEQ_FILE="${SCRIPT_DIR}/.compile_seq"
+
+# Read and increment build sequence number
+if [ -f "$SEQ_FILE" ]; then
+    SEQ=$(cat "$SEQ_FILE")
+else
+    SEQ=0
+fi
+SEQ=$((SEQ + 1))
+echo "$SEQ" > "$SEQ_FILE"
+LOCAL_VERSION="-flat-v${SEQ}"
+echo "=== Build sequence: ${SEQ} (CONFIG_LOCALVERSION=${LOCAL_VERSION}) ==="
+
+SSH_OPTS="-p ${SSH_PORT} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 
 ssh_vm() {
-    ssh ${GUEST_HOST} "$@"
+    sshpass -p "$ROOT_PASSWORD" ssh $SSH_OPTS root@"$GUEST_IP" "$@"
 }
 
 scp_vm() {
-    scp "$@"
+    sshpass -p "$ROOT_PASSWORD" scp -P ${SSH_PORT} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$@"
 }
 
-echo "=== Step 1: Copy VM kernel config to host ==="
-ssh_vm "cat /boot/config-\$(uname -r)" > "${SCRIPT_DIR}/vm_kernel_config"
-echo "Saved VM kernel config to ${SCRIPT_DIR}/vm_kernel_config"
+echo "=== Step 1: Build kernel debs from ${LINUX_DIR} ==="
+cd "${LINUX_DIR}"
+echo 1 > .version
+# Disable debug info to reduce package size
+scripts/config --disable CONFIG_DEBUG_INFO
+scripts/config --disable CONFIG_DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT
+scripts/config --disable CONFIG_DEBUG_INFO_DWARF4
+scripts/config --disable CONFIG_DEBUG_INFO_DWARF5
+scripts/config --enable CONFIG_DEBUG_INFO_NONE
+# Set localversion to track build sequence
+scripts/config --set-str CONFIG_LOCALVERSION "$LOCAL_VERSION"
+make olddefconfig
+make -s bindeb-pkg -j${NJOBS}
 
-echo "=== Step 2: Upload config to gnr ==="
-scp "${SCRIPT_DIR}/vm_kernel_config" ${GNR_HOST}:${GNR_LINUX_DIR}/.config
-echo "Config uploaded to ${GNR_HOST}:${GNR_LINUX_DIR}/.config"
-
-echo "=== Step 3: Clean old debs and build kernel on gnr ==="
-ssh ${GNR_HOST} "rm -f ${GNR_DEB_DIR}/linux-*.deb"
-# Fix Ubuntu-specific config values incompatible with the gnr kernel tree
-# env -i prevents forwarding zh_CN locale vars that cause perl warnings on gnr
-env -i HOME="$HOME" PATH="$PATH" SSH_AUTH_SOCK="${SSH_AUTH_SOCK:-}" \
-ssh ${GNR_HOST} "cd ${GNR_LINUX_DIR} && \
-    sed -i 's|CONFIG_SYSTEM_TRUSTED_KEYS=.*|CONFIG_SYSTEM_TRUSTED_KEYS=\"\"|' .config && \
-    sed -i 's|CONFIG_SYSTEM_REVOCATION_KEYS=.*|CONFIG_SYSTEM_REVOCATION_KEYS=\"\"|' .config && \
-    sed -i '/CONFIG_CRYPTO_LIB_POLY1305_GENERIC/d' .config && \
-    sed -i '/CONFIG_CRYPTO_LIB_POLY1305=m/s/=m/=y/' .config && \
-    sed -i '/CONFIG_CRYPTO_LIB_CURVE25519_GENERIC/d' .config && \
-    sed -i '/CONFIG_FB_BACKLIGHT/d' .config && \
-    sed -i '/CONFIG_HYPERV=m/d' .config && \
-    sed -i '/CONFIG_ANDROID_BINDER_IPC=m/d' .config && \
-    sed -i '/CONFIG_ANDROID_BINDERFS=m/d' .config && \
-    sed -i '/CONFIG_MULTIPLEXER=m/d' .config && \
-    echo 1 > .version && \
-    make olddefconfig && make clean && make bindeb-pkg -j256"
-
-echo "=== Step 4: Download debs from gnr (excluding libc and dbg) ==="
+echo "=== Step 2: Collect debs (excluding libc and dbg) ==="
 mkdir -p "${LOCAL_DEB_DIR}"
 rm -f "${LOCAL_DEB_DIR}"/*.deb
-DEB_LIST=$(ssh ${GNR_HOST} "ls ${GNR_DEB_DIR}/linux-*.deb 2>/dev/null | grep -v libc | grep -v dbg")
+# bindeb-pkg places debs in the parent directory; only pick up current build
+DEB_LIST=$(ls "${LINUX_DIR}"/../linux-*flat-v${SEQ}*.deb 2>/dev/null | grep -v libc | grep -v dbg)
 if [ -z "$DEB_LIST" ]; then
-    echo "ERROR: No deb files found on gnr"
+    echo "ERROR: No deb files found for flat-v${SEQ}"
     exit 1
 fi
 for deb in ${DEB_LIST}; do
-    echo "Downloading $(basename ${deb})..."
-    scp ${GNR_HOST}:"${deb}" "${LOCAL_DEB_DIR}/"
+    cp "${deb}" "${LOCAL_DEB_DIR}/"
+    echo "  $(basename ${deb})"
 done
 
-echo "=== Step 5: Upload debs to VM ==="
-scp_vm "${LOCAL_DEB_DIR}"/*.deb ${GUEST_HOST}:~/
+echo "=== Step 3: Upload debs to VM ==="
+scp_vm ${LOCAL_DEB_DIR}/*.deb root@"$GUEST_IP":~/
 
-echo "=== Step 6: Install debs on VM ==="
+echo "=== Step 4: Remove old flat-v kernel packages on VM ==="
+ssh_vm "dpkg -l | grep 'flat-v' | awk '{print \$2}' | xargs -r sudo dpkg -P" || true
+
+echo "=== Step 5: Install debs on VM ==="
 DEB_NAMES=$(ls "${LOCAL_DEB_DIR}"/*.deb | xargs -I{} basename {})
 INSTALL_CMD=""
 for deb in ${DEB_NAMES}; do
@@ -84,11 +88,15 @@ done
 ssh_vm "sudo dpkg -i ${INSTALL_CMD}"
 ssh_vm "rm -f ${INSTALL_CMD}"
 
-echo "=== Step 7: Reboot VM ==="
+echo "=== Step 5b: Remove debs from host ==="
+rm -f "${LOCAL_DEB_DIR}"/*.deb
+rm -f "${LINUX_DIR}"/../linux-*flat-v${SEQ}*.deb
+
+echo "=== Step 6: Reboot VM ==="
 # GRUB defaults to the newest kernel, no grub-reboot needed.
 # With QEMU -no-reboot, the VM will shut down; relaunch it manually.
 ssh_vm "sudo reboot" || true
 
 echo "=== Done ==="
 echo "If QEMU uses -no-reboot, relaunch VM with: ./setup_img_launch_vm.sh launch"
-echo "Then verify: ssh ${GUEST_HOST} uname -r"
+echo "Then verify: ssh root@${GUEST_IP} -p ${SSH_PORT} uname -r"

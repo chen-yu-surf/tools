@@ -15,7 +15,8 @@ IMG=ubuntu-24.04-server-cloudimg-amd64.img
 IMG_URL=https://cloud-images.ubuntu.com/releases/noble/release/${IMG}
 BIOS_IMAGE=OVMF.fd
 ROOT_PASSWORD=123456
-GUEST_IP=192.168.122.100
+GUEST_IP=localhost
+SSH_PORT=2222
 
 find_bridge_helper() {
     for p in /usr/libexec/qemu-bridge-helper /usr/lib/qemu/qemu-bridge-helper; do
@@ -93,21 +94,14 @@ setup_image() {
 
     # 6c. Add netplan config with static IP (required since cloud-init is disabled)
     echo "--- Adding netplan static IP config (${GUEST_IP}) ---"
-    sudo tee /mnt/etc/netplan/01-netcfg.yaml << EOF
+    sudo tee /mnt/etc/netplan/01-netcfg.yaml << 'EOF'
 network:
   version: 2
   ethernets:
     id0:
       match:
         name: "en*"
-      dhcp4: no
-      addresses:
-        - ${GUEST_IP}/24
-      routes:
-        - to: default
-          via: 192.168.122.1
-      nameservers:
-        addresses: [192.168.122.1]
+      dhcp4: yes
 EOF
 
     sudo umount /mnt
@@ -125,7 +119,7 @@ EOF
 }
 
 launch_vm() {
-    echo "=== Launching VM with bridge networking ==="
+    echo "=== Launching VM ==="
     cd "$SCRIPT_DIR"
 
     # Kill any existing VM with the same process name
@@ -135,27 +129,35 @@ launch_vm() {
     local SERIAL_LOG="$SCRIPT_DIR/vm_serial.log"
     > "$SERIAL_LOG"
 
-    numactl -m 0 -N 0 qemu-system-x86_64 \
+    qemu-system-x86_64 \
         -accel kvm \
         -no-reboot \
         -name process=genvm,debug-threads=on \
         -cpu host,host-phys-bits,pmu=off \
-        -smp cpus=32,sockets=4,cores=8,threads=1 \
-        -m 32G \
-        -object memory-backend-ram,id=mem0,size=8G \
-        -object memory-backend-ram,id=mem1,size=8G \
-        -object memory-backend-ram,id=mem2,size=8G \
-        -object memory-backend-ram,id=mem3,size=8G \
-        -numa node,cpus=0-7,nodeid=0,memdev=mem0 \
-        -numa node,cpus=8-15,nodeid=1,memdev=mem1 \
-        -numa node,cpus=16-23,nodeid=2,memdev=mem2 \
-        -numa node,cpus=24-31,nodeid=3,memdev=mem3 \
+        -smp cpus=256,sockets=8,cores=32,threads=1 \
+        -m 64G \
+        -object memory-backend-ram,id=mem0,size=16G \
+        -object memory-backend-ram,id=mem1,size=16G \
+        -object memory-backend-ram,id=mem2,size=16G \
+        -object memory-backend-ram,id=mem3,size=16G \
+        -numa node,nodeid=0,memdev=mem0 \
+        -numa node,nodeid=1,memdev=mem1 \
+        -numa node,nodeid=2,memdev=mem2 \
+        -numa node,nodeid=3,memdev=mem3 \
+        -numa cpu,node-id=0,socket-id=0 \
+        -numa cpu,node-id=0,socket-id=4 \
+        -numa cpu,node-id=1,socket-id=1 \
+        -numa cpu,node-id=1,socket-id=5 \
+        -numa cpu,node-id=2,socket-id=2 \
+        -numa cpu,node-id=2,socket-id=6 \
+        -numa cpu,node-id=3,socket-id=3 \
+        -numa cpu,node-id=3,socket-id=7 \
         -machine q35,hpet=off,kernel_irqchip=split \
         -bios "$BIOS_IMAGE" \
         -display none \
         -vga none \
         -device virtio-net-pci,netdev=nic0 \
-        -netdev tap,id=nic0,br=virbr0,helper=$(find_bridge_helper),vhost=on \
+        -netdev user,id=nic0,hostfwd=tcp::${SSH_PORT}-:22 \
         -device vhost-vsock-pci,guest-cid=11 \
         -serial file:"$SERIAL_LOG" \
         -monitor none \
@@ -165,10 +167,10 @@ launch_vm() {
     echo "VM launched in background (PID: $(pgrep -f 'process=genvm'))"
     echo "Serial log: $SERIAL_LOG"
 
-    local SSH_CMD="sshpass -p ${ROOT_PASSWORD} ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+    local SSH_CMD="sshpass -p ${ROOT_PASSWORD} ssh -p ${SSH_PORT} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 
     # Wait for VM to boot and SSH to become ready
-    echo "=== Waiting for SSH on ${GUEST_IP} ==="
+    echo "=== Waiting for SSH on ${GUEST_IP}:${SSH_PORT} ==="
     local max_wait=120
     local elapsed=0
     while [ $elapsed -lt $max_wait ]; do
@@ -182,7 +184,7 @@ launch_vm() {
     done
 
     if [ $elapsed -ge $max_wait ]; then
-        echo "ERROR: SSH to ${GUEST_IP} not ready after ${max_wait}s"
+        echo "ERROR: SSH to ${GUEST_IP}:${SSH_PORT} not ready after ${max_wait}s"
         echo "Check serial log: tail -f $SERIAL_LOG"
         exit 1
     fi
@@ -191,17 +193,18 @@ launch_vm() {
     echo "=== Verifying SSH connectivity ==="
     $SSH_CMD root@"$GUEST_IP" "hostname; uname -r; ip addr show | grep 'inet '"
 
-    # Verify external network access
-    echo "=== Verifying external network access ==="
-    $SSH_CMD root@"$GUEST_IP" "ping -c 3 -W 5 1.1.1.1 && echo 'External network: OK' || echo 'External network: FAILED'"
+    # Resize guest filesystem to fill enlarged disk
+    echo "=== Resizing guest filesystem ==="
+    $SSH_CMD root@"$GUEST_IP" "growpart /dev/vda 1 2>/dev/null; resize2fs /dev/vda1" 2>/dev/null
+    $SSH_CMD root@"$GUEST_IP" "df -h /"
 
     echo "=== VM is running and verified ==="
 }
 
 resize_guest_disk() {
-    echo "=== Resizing guest disk (guest IP: $GUEST_IP) ==="
-    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-        root@"$GUEST_IP" "growpart /dev/vda 1 && resize2fs /dev/vda1 && df -h /"
+    echo "=== Resizing guest disk (guest: $GUEST_IP:$SSH_PORT) ==="
+    ssh -p ${SSH_PORT} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        root@"$GUEST_IP" "growpart /dev/vda 1 2>/dev/null; resize2fs /dev/vda1 && df -h /"
 }
 
 case "${1:-}" in
