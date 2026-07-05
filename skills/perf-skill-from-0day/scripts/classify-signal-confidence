@@ -1,0 +1,84 @@
+#!/bin/bash
+# Classify Phase 2 Track A (bisect-driven) signal status and confidence estimate
+# from Phase 1 manifest data only. Implements the Magnitude threshold, Polarity
+# check, and Confidence rubric in references/phase2-signal.md verbatim.
+#
+# Usage:
+#   .agents/skills/lkp-auditperf/scripts/classify-signal-confidence \
+#       <boundary_valid> <perf_change> <change_direction>
+#
+# Arguments:
+#   boundary_valid   true|false  (from the Phase 1 manifest)
+#   perf_change      signed percentage, e.g. -52%, -52, or 3.4  (from the manifest)
+#   change_direction improvement|regression  (from history.txt change_direction:)
+#
+# Output (key=value lines):
+#   status=Validated Boundary|Noise/Flake
+#   confidence_estimate=High|Medium|Low|N/A   (N/A only when status=Noise/Flake)
+#   explanation=<one-line rationale citing boundary_valid and perf_change>
+#
+# Notes:
+#   - Per the Polarity check, boundary_valid is always False for improvements
+#     by construction (it only detects FBC-caused failures). This script
+#     ignores boundary_valid for change_direction=improvement and classifies
+#     on |perf_change| magnitude alone, per the documented exception.
+#   - The Low tier is the default bucket for any non-noise case that does not
+#     meet the High/Medium bar — this already covers both documented Low
+#     triggers (boundary_valid=False with a consistent regression, or a
+#     5-10% change with sparse parent data) without needing a separate
+#     "sparse data" input.
+#   - Phase 4 modifiers ([MULTI-METRIC CONFIRMED], [SINGLE-METRIC], [HIGH
+#     VARIANCE]) are applied later by the LLM after evidence review — this
+#     script only produces the Phase 2 manifest-only estimate.
+#
+# Exit codes:
+#   0  Always (Noise/Flake is a valid, non-error outcome)
+#   1  Wrong number of arguments, or non-numeric perf_change
+
+set -euo pipefail
+
+if [[ $# -ne 3 ]]; then
+	echo "Usage: classify-signal-confidence <boundary_valid> <perf_change> <change_direction>" >&2
+	exit 1
+fi
+
+boundary_valid=$1
+perf_change_raw=$2
+change_direction=$3
+
+# Strip a trailing % and any surrounding whitespace, keep the sign.
+perf_change=${perf_change_raw//%/}
+perf_change=${perf_change//[[:space:]]/}
+
+if ! [[ $perf_change =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; then
+	echo "Non-numeric perf_change: ${perf_change_raw}" >&2
+	exit 1
+fi
+
+abs_perf_change=${perf_change#-}
+
+# Magnitude threshold: |perf_change| < 5% -> Noise/Flake regardless of boundary_valid.
+if (($(echo "${abs_perf_change} < 5" | bc -l))); then
+	echo "status=Noise/Flake"
+	echo "confidence_estimate=N/A"
+	echo "explanation=|perf_change|=${abs_perf_change}% is below the 5% noise threshold"
+	exit 0
+fi
+
+echo "status=Validated Boundary"
+
+# Polarity check: ignore boundary_valid for improvements (always False by
+# construction); treat it as satisfied so the magnitude tiers alone decide.
+effective_boundary_valid=$boundary_valid
+[[ $change_direction == improvement ]] && effective_boundary_valid=true
+
+if [[ $effective_boundary_valid == true ]] && (($(echo "${abs_perf_change} >= 20" | bc -l))); then
+	confidence=High
+elif [[ $effective_boundary_valid == true ]] && (($(echo "${abs_perf_change} >= 5" | bc -l))); then
+	confidence=Medium
+else
+	confidence=Low
+fi
+
+echo "confidence_estimate=${confidence}"
+echo "explanation=boundary_valid=${boundary_valid}, perf_change=${perf_change_raw}, change_direction=${change_direction}"

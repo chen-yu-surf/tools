@@ -1,0 +1,101 @@
+#!/bin/bash
+# Tally regression-table rows returned by grepping email-body.txt for the suite name
+# (mcp_*_lkp_mcp_grep_extracted_data(tmp_dir, "email-body.txt", <suite_name>)) and classify how
+# many reported metrics show a significant change, and whether they agree in direction.
+# Implements references/phase3-evidence.md Step 4 "Secondary metric confirmation" verbatim.
+#
+# Usage:
+#   .agents/skills/lkp-auditperf/scripts/classify-metric-tag <grep_output_file>
+#   .agents/skills/lkp-auditperf/scripts/classify-metric-tag -   (read from stdin)
+#
+# Each input line is a `lkp compare` regression-table row, e.g.:
+#   37316 ±10%      +25.9%      48191 ±5%        lmbench3.PIPE.bandwidth.MB/sec
+# or, from a real bisect email (positive changes often have NO leading sign, unlike negative
+# ones which always show "-"):
+#   28270.67       35%   38095.50        stress-ng.memthrash.ops
+#   147882.00     -42%   85190.33        stress-ng.time.involuntary_context_switches
+# The delta token is the first bare `[+-]?N[.N]%` token on the line that is NOT the stddev value
+# immediately following a "±" token (e.g. the "4%" in "317026.00 ± 4%"). All other lines
+# (headers, blank lines, non-numeric context) are ignored.
+#
+# Output (key=value lines):
+#   metric=<name> delta=<+N.N%|-N.N%> significant=yes|no
+#   ...
+#   significant_count=<N> direction=positive|negative|mixed|none
+#   metric_tag=[MULTI-METRIC CONFIRMED]|[SINGLE-METRIC]|[INCONSISTENT]
+#
+# Notes:
+#   - "Significant" means |delta| > 5%, matching the Step 4 threshold.
+#   - metric_tag=[INCONSISTENT] only fires when >= 2 significant metrics move in opposite
+#     directions; a single significant metric is always [SINGLE-METRIC] regardless of sign.
+#   - No input lines with a delta column at all -> metric_tag=[SINGLE-METRIC], matching the
+#     "if absent" fallback in phase3-evidence.md.
+#
+# Exit codes:
+#   0  Always (an empty/no-match input is a valid, non-error outcome)
+#   1  Wrong number of arguments, or file not found (and not "-")
+
+set -euo pipefail
+
+if [[ $# -ne 1 ]]; then
+	echo "Usage: classify-metric-tag <grep_output_file|->" >&2
+	exit 1
+fi
+
+input=$1
+if [[ $input != "-" ]] && [[ ! -f $input ]]; then
+	echo "Not found: ${input}" >&2
+	exit 1
+fi
+
+cat -- "$input" | awk '
+{
+	delta = ""
+	for (i = 1; i <= NF; i++) {
+		if ($i !~ /^[+-]?[0-9]+(\.[0-9]+)?%$/)
+			continue
+		if (i > 1 && $(i - 1) == "±")
+			continue
+		delta = $i
+		break
+	}
+	if (delta == "")
+		next
+	metric = $NF
+	numeric = delta
+	sub(/%$/, "", numeric)
+	if (numeric !~ /^[+-]/)
+		numeric = "+" numeric
+	abs = numeric
+	sub(/^[+-]/, "", abs)
+	significant = (abs + 0 > 5) ? "yes" : "no"
+	print "metric=" metric " delta=" delta " significant=" significant
+	if (significant == "yes") {
+		significant_count++
+		if (numeric ~ /^-/)
+			negative_count++
+		else
+			positive_count++
+	}
+}
+END {
+	significant_count += 0
+	positive_count += 0
+	negative_count += 0
+	if (significant_count == 0) {
+		print "significant_count=0 direction=none"
+		print "metric_tag=[SINGLE-METRIC]"
+	} else if (positive_count > 0 && negative_count > 0) {
+		print "significant_count=" significant_count " direction=mixed"
+		print "metric_tag=[INCONSISTENT]"
+	} else if (significant_count >= 2) {
+		direction = (positive_count > 0) ? "positive" : "negative"
+		print "significant_count=" significant_count " direction=" direction
+		print "metric_tag=[MULTI-METRIC CONFIRMED]"
+	} else {
+		direction = (positive_count > 0) ? "positive" : "negative"
+		print "significant_count=" significant_count " direction=" direction
+		print "metric_tag=[SINGLE-METRIC]"
+	}
+}
+'

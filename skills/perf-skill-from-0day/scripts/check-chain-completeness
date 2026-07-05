@@ -1,0 +1,58 @@
+#!/bin/bash
+# Classify each perf-profile calltrace row's call-chain completeness: does it start at a known
+# syscall-entry frame, or is the top frame missing (requiring Phase 4 Step 2's LSP extension)?
+# Implements references/phase3-evidence.md "## Perf-profile format" chain-completeness rule
+# verbatim.
+#
+# Usage:
+#   .agents/skills/lkp-auditperf/scripts/check-chain-completeness <perf_profile_file>
+#   .agents/skills/lkp-auditperf/scripts/check-chain-completeness -   (read from stdin)
+#
+# Each input line is expected to contain a `perf-profile.calltrace.cycles-pp.<call_chain>` token
+# (call_chain = dot-separated function names, leaf -> outermost, e.g.
+# vfs_write.ksys_write.do_syscall_64.entry_SYSCALL_64_after_hwframe has leaf vfs_write first and
+# the syscall-entry frame last). Lines without that token are ignored (headers, blank lines,
+# non-calltrace perf-profile rows such as perf-profile.self.*).
+#
+# A call chain is COMPLETE if its outermost (last) frame is one of:
+#   syscall_entry_from_user_mode, entry_SYSCALL_64, entry_SYSCALL_64_after_hwframe, do_syscall_64
+# Otherwise it is flagged TRUNCATED — Phase 4 Step 2 must extend it upward via LSP references.
+#
+# Output (key=value lines):
+#   chain=<call_chain> top_frame=<last_frame> status=complete|truncated
+#   ...
+#
+# Exit codes:
+#   0  Always (a truncated chain is a valid, non-error outcome)
+#   1  Wrong number of arguments, or file not found (and not "-")
+
+set -euo pipefail
+
+if [[ $# -ne 1 ]]; then
+	echo "Usage: check-chain-completeness <perf_profile_file|->" >&2
+	exit 1
+fi
+
+input=$1
+if [[ $input != "-" ]] && [[ ! -f $input ]]; then
+	echo "Not found: ${input}" >&2
+	exit 1
+fi
+
+cat -- "$input" | awk '
+{
+	idx = index($0, "cycles-pp.")
+	if (idx == 0)
+		next
+	chain = substr($0, idx + length("cycles-pp."))
+	split(chain, parts, /[ \t]/)
+	chain = parts[1]
+	n = split(chain, frames, ".")
+	top_frame = frames[n]
+	if (top_frame == "syscall_entry_from_user_mode" || top_frame == "entry_SYSCALL_64" || top_frame == "entry_SYSCALL_64_after_hwframe" || top_frame == "do_syscall_64")
+		status = "complete"
+	else
+		status = "truncated"
+	print "chain=" chain " top_frame=" top_frame " status=" status
+}
+'

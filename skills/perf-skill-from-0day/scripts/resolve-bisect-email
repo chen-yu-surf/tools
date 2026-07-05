@@ -1,0 +1,103 @@
+#!/bin/bash
+# Resolve the original LKP bisect report email for a commit SHA by probing the
+# SHZ email archive first, then IGK. Implements the Phase 1 Step 1 commit-SHA
+# branch in references/phase1-validate.md verbatim (server resolution, the
+# two-site find/grep probe, and bisect_tag extraction).
+#
+# Excludes self-generated report emails from this same skill family (and its
+# predecessor/sibling tool names) by substring, not just prefix -- real
+# examples seen in the archive: "Subject___auditfbc___copilot_v0.1.0___shz___
+# validated_1__...", "Subject___Error___auditfbc___langchain_v0.2.0___...",
+# "Subject___auditperf__optimization___...". A prefix-anchored exclusion
+# (`! -name 'Subject___auditperf__*'`) misses all of these because the tool
+# name is not always the first segment (an "Error___" or "RE___" wrapper can
+# come first) and "auditfbc" is a different literal string than "auditperf".
+# Match on substring instead: `! -name '*auditfbc*' ! -name '*auditperf*'`.
+#
+# Usage:
+#   .agents/skills/lkp-auditperf/scripts/resolve-bisect-email \
+#       <lkp_core_root> <fbc_hash10>
+#
+# Arguments:
+#   lkp_core_root  Absolute path to the lkp-core checkout (to read llm/config.yml)
+#   fbc_hash10     First-bad-commit SHA, at least 10 hex characters
+#
+# Output (key=value lines):
+#   found=true|false
+#   server=<hostname>       (only when found=true; use for all subsequent archive reads)
+#   path=<file>             (only when found=true)
+#   bisect_tag=<[shz]|[igk]|...>  (only when found=true; first bracketed tag in the Subject line)
+#   raw_subject=<Subject header text, still RFC 2047-encoded>  (only when found=true)
+#
+# Note: the final human-readable `mail_subject` cannot be constructed here —
+# it also needs `metric_from_perf_change` from the Phase 1 Step 2 manifest,
+# which is not yet available at this point. Build it after Step 2 as:
+#   "{bisect_tag} {fbc_hash[:10]} bisect for {metric_from_perf_change}"
+#
+# Exit codes:
+#   0  Always (found=false is a valid, non-error outcome)
+#   1  Wrong number of arguments
+
+set -euo pipefail
+
+if [[ $# -ne 2 ]]; then
+	echo "Usage: resolve-bisect-email <lkp_core_root> <fbc_hash10>" >&2
+	exit 1
+fi
+
+lkp_core=$1
+fbc_hash10=$2
+config_file="${lkp_core}/llm/config.yml"
+
+get_server()
+{
+	local section=$1
+	awk -v section="${section}:" '
+		$0 == section { in_section=1; next }
+		in_section && $0 !~ /^[[:space:]]/ { in_section=0 }
+		in_section && /lkp_server:/ {
+			sub(/^[[:space:]]*lkp_server:[[:space:]]*/, "")
+			print
+			exit
+		}
+	' "$config_file"
+}
+
+shz_server=$(get_server shz)
+[[ $shz_server ]] || shz_server=$(get_server default)
+igk_server=$(get_server igk)
+
+probe_server()
+{
+	local server=$1
+
+	# shellcheck disable=SC2029
+	ssh "$server" "
+		f=\$(find /zdci/archive/email -maxdepth 4 -type f \
+			-name '*validated_1__${fbc_hash10}*' \
+			! -name '*auditfbc*' ! -name '*auditperf*' 2>/dev/null | head -1)
+		[[ -n \$f ]] && echo \"path=\$f\" && \
+			grep -m1 '^Subject: ' \"\$f\" | sed 's/^Subject: //'
+	" 2>/dev/null || true
+}
+
+for server in "$shz_server" "$igk_server"; do
+	[[ $server ]] || continue
+
+	result=$(probe_server "$server")
+	path_line=$(grep '^path=' <<<"$result" || true)
+	[[ $path_line ]] || continue
+
+	path=${path_line#path=}
+	subject=$(grep -v '^path=' <<<"$result" || true)
+	bisect_tag=$(grep -oE '^\[[^]]+\]' <<<"$subject" || true)
+
+	echo "found=true"
+	echo "server=${server}"
+	echo "path=${path}"
+	echo "bisect_tag=${bisect_tag}"
+	echo "raw_subject=${subject}"
+	exit 0
+done
+
+echo "found=false"

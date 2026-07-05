@@ -1,0 +1,132 @@
+#!/bin/bash
+# Structural lint for the mechanically-checkable rules in the Phase 5 "Pre-send checklist":
+# section presence/order, forbidden raw mermaid fence, Verdict table row count, no metric table
+# inside Impact Mechanism, and email subject format. Implements references/phase5-patch.md
+# "Pre-send checklist" verbatim for the checks that do NOT require semantic judgment.
+#
+# The following checklist items are judgment calls and are deliberately NOT covered here — the
+# LLM must still review them itself: Summary sentence count/prose-quality and absence of internal
+# symbol names, cc_email value (not present in the body text), and the "workspace temp files are
+# under workspace_tmp/" check (about files on disk, not body content).
+#
+# Usage:
+#   .agents/skills/lkp-auditperf/scripts/lint-email-body <md_body_file> <subject> <mode>
+#
+# Arguments:
+#   md_body_file  path to the rendered email body markdown (md_body / rca_email_body)
+#   subject       the email subject line the LLM intends to send
+#   mode          "improvement" or "regression" — selects the expected section order
+#
+# Output (key=value lines):
+#   section_order=ok|violation:<detail>
+#   mermaid_raw_fence=absent|present
+#   verdict_table_rows=<N> verdict_table=ok|violation:<detail>
+#   impact_mechanism_table=absent|present
+#   subject_format=ok|violation:<detail>
+#
+# Exit codes:
+#   0  Always (individual violation=... fields are the intended failure signal, not a script error)
+#   1  Wrong number of arguments, file not found, or invalid mode
+
+set -euo pipefail
+
+if [[ $# -ne 3 ]]; then
+	echo "Usage: lint-email-body <md_body_file> <subject> <improvement|regression>" >&2
+	exit 1
+fi
+
+md_body_file=$1
+subject=$2
+mode=$3
+
+if [[ ! -f $md_body_file ]]; then
+	echo "Not found: ${md_body_file}" >&2
+	exit 1
+fi
+
+case "$mode" in
+improvement)
+	expected_order=("Summary" "Verdict" "Impact Mechanism" "Causal Chain" "Evidence" "Prediction vs Measurement" "Community Awareness" "Optimization Opportunities" "Optimization Proposal")
+	;;
+regression)
+	expected_order=("Summary" "Verdict" "Impact Mechanism" "Causal Chain" "Evidence" "Prediction vs Measurement" "Fix Strategy" "Community Awareness" "Patch")
+	;;
+*)
+	echo "Invalid mode: ${mode} (expected improvement|regression)" >&2
+	exit 1
+	;;
+esac
+
+# Section order + presence: extract top-level "## " headers in file order.
+mapfile -t present_sections < <(grep -E '^## ' -- "$md_body_file" | sed -E 's/^## +//')
+
+order_result="ok"
+last_index=-1
+for section in "${present_sections[@]}"; do
+	found_index=-1
+	for i in "${!expected_order[@]}"; do
+		if [[ ${expected_order[$i]} == "$section" ]]; then
+			found_index=$i
+			break
+		fi
+	done
+	if [[ $found_index -eq -1 ]]; then
+		order_result="violation:unknown section '${section}'"
+		break
+	fi
+	if [[ $found_index -le $last_index ]]; then
+		order_result="violation:'${section}' is out of order"
+		break
+	fi
+	last_index=$found_index
+done
+echo "section_order=${order_result}"
+
+if grep -qE '^```mermaid' -- "$md_body_file"; then
+	echo "mermaid_raw_fence=present"
+else
+	echo "mermaid_raw_fence=absent"
+fi
+
+# Verdict table row count: lines between "## Verdict" and the next "## " header, matching
+# markdown table rows ("|...|"), excluding the "|---|" separator row (must contain a literal "-";
+# phase4-rca.md's own Verdict template uses an empty-cell header row "| | |" with no header text,
+# which would otherwise false-positive-match a separator-detection regex that only checks for
+# "|", ":", and space characters). The first counted row is the header row, so the data-row count
+# is (matched - 1).
+verdict_rows=$(awk '
+/^## Verdict/ { in_section = 1; next }
+/^## / && in_section { in_section = 0 }
+in_section && /^\|/ {
+	if ($0 ~ /^\|[-: |]+\|$/ && $0 ~ /-/)
+		next
+	rows++
+}
+END { print rows + 0 }
+' "$md_body_file")
+verdict_data_rows=$((verdict_rows > 0 ? verdict_rows - 1 : 0))
+if [[ $verdict_data_rows -ge 8 ]]; then
+	verdict_table="ok"
+else
+	verdict_table="violation:only ${verdict_data_rows} data rows (need 8)"
+fi
+echo "verdict_table_rows=${verdict_data_rows} verdict_table=${verdict_table}"
+
+# Impact Mechanism must not contain a markdown table.
+impact_has_table=$(awk '
+/^## Impact Mechanism/ { in_section = 1; next }
+/^## / && in_section { in_section = 0 }
+in_section && /^\|.*\|.*\|/ { found = 1 }
+END { print found + 0 }
+' "$md_body_file")
+if [[ $impact_has_table -eq 1 ]]; then
+	echo "impact_mechanism_table=present"
+else
+	echo "impact_mechanism_table=absent"
+fi
+
+if [[ $subject =~ ^\[auditperf\]\ [0-9a-f]{10}:\ .+$ ]]; then
+	echo "subject_format=ok"
+else
+	echo "subject_format=violation:does not match '[auditperf] <sha10>: <title>'"
+fi

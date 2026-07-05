@@ -1,0 +1,92 @@
+#!/bin/bash
+# Apply Phase 4 confidence modifiers and the data-source confidence cap to the Phase 2
+# manifest-only confidence estimate. Implements references/phase2-signal.md "Phase 4 modifiers"
+# and references/phase4-rca.md "Confidence caps by data source" verbatim.
+#
+# Usage:
+#   .agents/skills/lkp-auditperf/scripts/apply-confidence-modifiers \
+#       <base_confidence> <data_source_tag> [modifier ...]
+#
+# Arguments:
+#   base_confidence   High|Medium|Low   (Phase 2 classify-signal-confidence output, or Phase 3B's
+#                                        Medium/Low estimate for result-search/static-only)
+#   data_source_tag   BISECT-REPORT | RESULT-FOUND-WITH-PROFILE | RESULT-FOUND-NO-PROFILE |
+#                      STATIC-ONLY
+#   modifier          zero or more of, applied in the order given (the LLM decides which
+#                     modifiers apply from the evidence; this script only does the tier
+#                     arithmetic and the final cap):
+#                       upgrade-to-high  [MULTI-METRIC CONFIRMED] + boundary_valid=True +
+#                                        single-hop causal chain
+#                       upgrade-one      [MULTI-METRIC CONFIRMED] + boundary_valid=False
+#                       downgrade-one    [SINGLE-METRIC], or [HIGH VARIANCE] on top call stack
+#                                        (pass twice to stack both downgrades)
+#
+# Output:
+#   confidence=High|Medium|Low
+#
+# Exit codes:
+#   0  Success
+#   1  Wrong number of arguments, or unknown base_confidence/data_source_tag/modifier
+
+set -euo pipefail
+
+if [[ $# -lt 2 ]]; then
+	echo "Usage: apply-confidence-modifiers <base_confidence> <data_source_tag> [modifier ...]" >&2
+	exit 1
+fi
+
+base_confidence=$1
+data_source_tag=$2
+shift 2
+
+declare -A tier_of=([Low]=0 [Medium]=1 [High]=2)
+declare -A name_of=([0]=Low [1]=Medium [2]=High)
+
+[[ -v tier_of[$base_confidence] ]] || {
+	echo "Unknown base_confidence: ${base_confidence}" >&2
+	exit 1
+}
+
+level=${tier_of[$base_confidence]}
+
+for modifier in "$@"; do
+	case "$modifier" in
+	upgrade-to-high)
+		level=2
+		;;
+	upgrade-one)
+		if [[ $level -lt 2 ]]; then
+			level=$((level + 1))
+		fi
+		;;
+	downgrade-one)
+		if [[ $level -gt 0 ]]; then
+			level=$((level - 1))
+		fi
+		;;
+	*)
+		echo "Unknown modifier: ${modifier}" >&2
+		exit 1
+		;;
+	esac
+done
+
+case "$data_source_tag" in
+BISECT-REPORT | RESULT-FOUND-WITH-PROFILE)
+	:
+	;;
+RESULT-FOUND-NO-PROFILE)
+	if [[ $level -gt 1 ]]; then
+		level=1
+	fi
+	;;
+STATIC-ONLY)
+	level=0
+	;;
+*)
+	echo "Unknown data_source_tag: ${data_source_tag}" >&2
+	exit 1
+	;;
+esac
+
+echo "confidence=${name_of[$level]}"

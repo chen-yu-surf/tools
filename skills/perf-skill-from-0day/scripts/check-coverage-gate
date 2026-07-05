@@ -1,0 +1,63 @@
+#!/bin/bash
+# Apply the Phase 4 Step 1 coverage gate to a bisect correlation.txt file: classify each
+# changed file as enabled or disabled, and decide whether the FBC could have compiled at all.
+# Implements references/phase4-rca.md Step 1 "Coverage gate" verbatim.
+#
+# Usage:
+#   .agents/skills/lkp-auditperf/scripts/check-coverage-gate <correlation.txt>
+#
+# Rules:
+#   - A changed file is DISABLED if its block contains only "|- miss CONFIG_*" lines (no
+#     "|- y", no "|- CONFIG_*=y", and no "CC " build line).
+#   - Any other file is ENABLED.
+#   - gate=fail only when every changed file is disabled (FBC cannot be the root cause).
+#
+# Output (key=value lines, one "file=" line per changed file, then a final "gate=" line):
+#   file=<path> status=enabled|disabled
+#   ...
+#   gate=pass|fail
+#
+# Exit codes:
+#   0  Always (gate=fail is a valid, non-error outcome)
+#   1  Wrong number of arguments, or file not found
+
+set -euo pipefail
+
+if [[ $# -ne 1 ]]; then
+	echo "Usage: check-coverage-gate <correlation.txt>" >&2
+	exit 1
+fi
+
+correlation_file=$1
+[[ -f $correlation_file ]] || {
+	echo "Not found: ${correlation_file}" >&2
+	exit 1
+}
+
+awk '
+function emit_current()
+{
+	if (!have_current)
+		return
+	if (enabled) {
+		print "file=" fname " status=enabled"
+		any_enabled = 1
+	} else {
+		print "file=" fname " status=disabled"
+	}
+}
+/^[^[:space:]]/ && NF > 0 {
+	emit_current()
+	fname = $0
+	enabled = 0
+	have_current = 1
+	next
+}
+$0 ~ /\|- y/ || $0 ~ /\|- *CONFIG_[A-Za-z0-9_]+=y/ || $0 ~ /CC / {
+	enabled = 1
+}
+END {
+	emit_current()
+	print (any_enabled ? "gate=pass" : "gate=fail")
+}
+' "$correlation_file"
