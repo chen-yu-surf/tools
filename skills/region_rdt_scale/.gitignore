@@ -1,0 +1,15 @@
+# Test results and logs
+results/
+*.log
+*.txt
+
+# Generated plots
+*.svg
+*.png
+
+# Proprietary binary (user-provided, not redistributed)
+mlc
+
+# Editor / OS cruft
+*~
+.DS_Store
